@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+build/
+vcpkg_installed/
+.git/
+infra/internet/.env
+infra/internet/certs/

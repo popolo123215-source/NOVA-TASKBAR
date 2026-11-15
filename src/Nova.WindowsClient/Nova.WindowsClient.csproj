@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><RootNamespace>Nova.WindowsClient</RootNamespace>
+    <AssemblyName>Nova.TaskBar</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nova.Core.Contracts\Nova.Core.Contracts.csproj" />
+    <ProjectReference Include="..\Nova.TransferEngine\Nova.TransferEngine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\build\native-x64\Release\nova_webrtc.dll" Link="nova_webrtc.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\build\native-x64\Release\nova_webrtc.dll')" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,58 @@
+services:
+  rendezvous:
+    build:
+      context: ../..
+      dockerfile: infra/internet/Dockerfile
+    restart: unless-stopped
+    environment:
+      NOVA_HTTPS_PORT: "8443"
+      NOVA_STATE_PATH: /var/lib/nova-rendezvous
+      NOVA_TLS_PFX_PATH: /run/certs/rendezvous.pfx
+      NOVA_TLS_PFX_PASSWORD: ${NOVA_TLS_PFX_PASSWORD:?Set NOVA_TLS_PFX_PASSWORD in infra/internet/.env}
+      NOVA_STUN_URIS: stun:${NOVA_PUBLIC_HOST:?Set NOVA_PUBLIC_HOST in infra/internet/.env}:3478
+      NOVA_TURN_URIS: turn:${NOVA_PUBLIC_HOST}:3478?transport=udp;turn:${NOVA_PUBLIC_HOST}:3478?transport=tcp;turns:${NOVA_PUBLIC_HOST}:5349?transport=tcp
+      NOVA_TURN_SHARED_SECRET: ${NOVA_TURN_SHARED_SECRET:?Set NOVA_TURN_SHARED_SECRET in infra/internet/.env}
+      NOVA_TURN_CREDENTIAL_TTL_SECONDS: "600"
+      NOVA_MAX_ONLINE_DEVICES: ${NOVA_MAX_ONLINE_DEVICES:-5000}
+      NOVA_CONNECTS_PER_IP_PER_MINUTE: ${NOVA_CONNECTS_PER_IP_PER_MINUTE:-30}
+    ports:
+      - "443:8443/tcp"
+    volumes:
+      - rendezvous-state:/var/lib/nova-rendezvous
+      - ./certs/rendezvous.pfx:/run/certs/rendezvous.pfx:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  turn:
+    image: coturn/coturn:4.18.0-alpine
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${NOVA_TURN_SHARED_SECRET:?Set NOVA_TURN_SHARED_SECRET in infra/internet/.env}
+      - --realm=${NOVA_PUBLIC_HOST:?Set NOVA_PUBLIC_HOST in infra/internet/.env}
+      - --listening-port=3478
+      - --tls-listening-port=5349
+      - --min-port=49160
+      - --max-port=49259
+      - --cert=/run/certs/fullchain.pem
+      - --pkey=/run/certs/privkey.pem
+      - --no-cli
+      - --no-multicast-peers
+    volumes:
+      - ./certs:/run/certs:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  rendezvous-state:

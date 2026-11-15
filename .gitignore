@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.log
+/build/
+/vcpkg_installed/
+/infra/internet/.env
+/infra/internet/certs/

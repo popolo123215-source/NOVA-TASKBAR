@@ -1,0 +1,89 @@
+openapi: 3.1.0
+info:
+  title: NOVA Core Device API
+  version: 0.1.0
+  description: Device directory and transfer offer control plane. Binary payload uses a separate resumable stream.
+servers:
+  - url: https://core.nova.example/v1
+paths:
+  /devices:
+    get:
+      operationId: listDevices
+      summary: List devices visible to the authenticated account
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Registered devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Device' }
+  /transfers:
+    post:
+      operationId: createTransferOffer
+      summary: Create an expiring offer; transfer starts only after recipient acceptance
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferOffer' }
+      responses:
+        '201': { description: Offer created }
+        '401': { description: Authentication required }
+        '422': { description: Invalid metadata }
+  /transfers/{transferId}/decision:
+    post:
+      operationId: decideTransfer
+      summary: Accept or reject an incoming transfer
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: transferId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accept]
+              properties: { accept: { type: boolean } }
+      responses:
+        '200': { description: Decision recorded }
+        '404': { description: Offer unavailable or expired }
+  /transfers/{transferId}/stream:
+    get:
+      operationId: openTransferStream
+      summary: Open an authenticated resumable binary stream after acceptance
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: transferId, in: path, required: true, schema: { type: string } }
+        - name: offset
+          in: query
+          required: false
+          description: Resume position in bytes; server validates the accepted offer.
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '206': { description: Resumable content segment }
+        '403': { description: Recipient has not accepted the offer }
+        '416': { description: Offset outside content range }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Device:
+      type: object
+      required: [deviceId, displayName, platform]
+      properties:
+        deviceId: { type: string }
+        displayName: { type: string }
+        platform: { type: string, enum: [windows, android, server] }
+    TransferOffer:
+      type: object
+      required: [recipientDeviceId, fileName, sizeBytes, sha256]
+      properties:
+        recipientDeviceId: { type: string }
+        fileName: { type: string, minLength: 1, maxLength: 255 }
+        sizeBytes: { type: integer, minimum: 0 }
+        contentType: { type: [string, 'null'] }
+        sha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }

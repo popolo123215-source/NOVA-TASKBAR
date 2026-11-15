@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nova.TransferEngine\Nova.TransferEngine.csproj" />
+    <ProjectReference Include="..\..\src\Nova.TransferProtocol\Nova.TransferProtocol.csproj" />
+    <ProjectReference Include="..\..\src\Nova.RendezvousService\Nova.RendezvousService.csproj" ReferenceOutputAssembly="false" />
+    <Content Include="..\..\build\native-x64\Release\nova_webrtc.dll" Link="nova_webrtc.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\build\native-x64\Release\nova_webrtc.dll')" />
+  </ItemGroup>
+</Project>
