@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -8,7 +9,38 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using CommunityToolkit.WinUI.Notifications;
 using Nova.WindowsClient.Services;
+
+if (args.Contains("--windows-toast-smoke", StringComparer.Ordinal))
+{
+    var testTrain = new ScheduledTrain(
+        new TimeOnly(23, 59),
+        new TimeOnly(0, 29),
+        1,
+        "TEST");
+    var testDate = new DateOnly(2026, 11, 18);
+    var testId = TrainDepartureReminder.CreateId(testDate, testTrain);
+    new WindowsToastNotificationService().Show(new TrainDepartureReminder(
+        testId,
+        "Проверка Windows Toast · NOVA",
+        testDate,
+        testTrain.Departure,
+        testTrain.Arrival,
+        testTrain.ArrivalDayOffset,
+        testTrain.TrainNumber,
+        1,
+        true,
+        false,
+        null));
+
+    var testTag = testId[..16];
+    var found = ToastNotificationManagerCompat.History.GetHistory()
+        .Any(notification => notification.Tag == testTag && notification.Group == "NOVA-Train");
+    Require(found, "Windows did not record the NOVA test toast in notification history.");
+    Console.WriteLine("PASS  Windows Toast was accepted and appears in notification history.");
+    return 0;
+}
 
 var passed = 0;
 var failed = 0;
@@ -23,6 +55,13 @@ Run("local schedule uses weekend data after the Moscow date changes", TestWeeken
 Run("local schedule handles arrivals after midnight and unverified data", TestScheduleMidnightAndUnverified);
 Run("partial local schedule is displayed without confirmed validity dates", TestPartialScheduleDisplay);
 Run("production schedule resource loads and returns real listed departures", TestProductionScheduleResource);
+Run("the schedule picker exposes every departure for its date", TestAllTrainsForDate);
+Run("reminder presets and custom minutes are validated", TestReminderLeadOptionsAndValidation);
+Run("reminders persist, update, disable, re-enable, and delete", TestReminderPersistenceAndManagement);
+Run("a due reminder is delivered once, including after restart", TestReminderIsDeliveredOnce);
+Run("simultaneous reminders are delivered independently", TestSimultaneousReminders);
+Run("missed and departed reminders never fire late", TestMissedAndDepartedReminders);
+Run("Moscow reminder times roll correctly across midnight", TestReminderMidnightRollover);
 Run("Yandex LRC parser preserves timestamps and untimed text", TestYandexLrcParser);
 Run("Yandex lyrics failures map to distinct user-visible states", TestYandexLyricsFailureClassification);
 Run("OBS WebSocket authentication vector is stable", TestObsAuthentication);
@@ -281,6 +320,267 @@ void TestProductionScheduleResource()
     Require(sunday.State == TrainScheduleState.PartiallyAvailable &&
         sunday.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6520", "6404", "6318"]),
         $"the production Sunday list did not produce its next three departures ({sunday.State}: {sundayNumbers})");
+}
+
+void TestAllTrainsForDate()
+{
+    var schedule = LocalTrainScheduleService.Load(Path.Combine(
+        Directory.GetCurrentDirectory(),
+        "assets",
+        "schedules",
+        "tsarskoe_selo_kupchino.txt"));
+    var day = LocalTrainScheduleService.GetTrainsForDate(schedule, new DateOnly(2026, 11, 18));
+    Require(day.State == TrainScheduleState.PartiallyAvailable && day.Trains.Count == 53,
+        $"the full weekday schedule was not exposed ({day.State}, {day.Trains.Count} trains)");
+    Require(day.Trains.Count > LocalTrainScheduleService.GetUpcoming(
+            schedule,
+            new DateTimeOffset(2026, 11, 18, 7, 0, 0, TimeSpan.Zero)).Upcoming.Count,
+        "the all-trains view was incorrectly limited to the main list's three departures");
+}
+
+void TestReminderLeadOptionsAndValidation()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var scheduler = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        scheduler.Initialize();
+        var now = MoscowUtc(new DateOnly(2026, 11, 19), new TimeOnly(11, 0));
+        var options = new[]
+        {
+            (new DateOnly(2026, 11, 19), CreateTestTrain("12:00", "T10"), 10),
+            (new DateOnly(2026, 11, 19), CreateTestTrain("13:00", "T20"), 20),
+            (new DateOnly(2026, 11, 19), CreateTestTrain("14:00", "T30"), 30),
+            (new DateOnly(2026, 11, 19), CreateTestTrain("15:00", "T45"), 45),
+            (new DateOnly(2026, 11, 19), CreateTestTrain("12:00", "T1"), 1),
+            (new DateOnly(2026, 11, 20), CreateTestTrain("15:00", "TMAX"), 1440)
+        };
+        foreach (var (date, train, lead) in options)
+            Require(scheduler.SetReminder(date, train, lead, now) == TrainReminderOperationResult.Saved,
+                $"valid {lead}-minute reminder was rejected");
+        Require(scheduler.Reminders.Select(reminder => reminder.LeadMinutes)
+                .Order().SequenceEqual([1, 10, 20, 30, 45, 1440]),
+            "preset and custom lead times were not stored exactly");
+
+        foreach (var valid in new[] { "1", "10", "20", "30", "1440" })
+            Require(TrainReminderScheduler.TryParseLeadMinutes(valid, out var parsed) &&
+                parsed == int.Parse(valid, CultureInfo.InvariantCulture),
+                $"valid lead time {valid} was rejected");
+        foreach (var invalid in new string?[] { null, "", "0", "1441", "-1", "+10", "1.5", "1 0" })
+            Require(!TrainReminderScheduler.TryParseLeadMinutes(invalid, out _),
+                $"invalid lead time '{invalid}' was accepted");
+
+        var rejectedZero = false;
+        try { scheduler.SetReminder(new DateOnly(2026, 11, 19), CreateTestTrain("16:00", "TZERO"), 0, now); }
+        catch (ArgumentOutOfRangeException) { rejectedZero = true; }
+        Require(rejectedZero, "the scheduler accepted zero minutes");
+        var rejectedLarge = false;
+        try { scheduler.SetReminder(new DateOnly(2026, 11, 19), CreateTestTrain("16:00", "TOVER"), 1441, now); }
+        catch (ArgumentOutOfRangeException) { rejectedLarge = true; }
+        Require(rejectedLarge, "the scheduler accepted more than 1440 minutes");
+    });
+}
+
+void TestReminderPersistenceAndManagement()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var date = new DateOnly(2026, 11, 19);
+        var train = CreateTestTrain("15:00", "TSTORE");
+        var now = MoscowUtc(date, new TimeOnly(11, 0));
+        var first = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        first.Initialize();
+        Require(first.SetReminder(date, train, 10, now) == TrainReminderOperationResult.Saved,
+            "initial reminder was not saved");
+        Require(first.SetReminder(date, train, 20, now) == TrainReminderOperationResult.Saved &&
+            first.Reminders.Count == 1 && first.Reminders[0].LeadMinutes == 20,
+            "selecting the same train created a duplicate instead of updating it");
+
+        var restarted = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        restarted.Initialize();
+        var stored = restarted.Reminders.Single();
+        Require(stored.TrainNumber == "TSTORE" && stored.Direction == TrainDepartureReminder.Route &&
+            stored.DepartureDate == date && stored.DepartureTime == train.Departure &&
+            stored.LeadMinutes == 20 && stored.Enabled && !stored.NotificationSent,
+            "the reminder did not survive reloading its persistent store");
+        Require(restarted.SetEnabled(stored.Id, false, now) == TrainReminderOperationResult.Saved &&
+            !restarted.Reminders.Single().Enabled,
+            "the reminder could not be disabled");
+        Require(restarted.SetEnabled(stored.Id, true, now) == TrainReminderOperationResult.Saved &&
+            restarted.Reminders.Single().Enabled,
+            "the reminder could not be re-enabled before its due time");
+        Require(restarted.Remove(stored.Id), "the reminder could not be deleted");
+        var afterDelete = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        afterDelete.Initialize();
+        Require(afterDelete.Reminders.Count == 0, "the deleted reminder reappeared after reload");
+    });
+}
+
+void TestReminderIsDeliveredOnce()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var scheduler = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        scheduler.Initialize();
+        var date = new DateOnly(2026, 11, 18);
+        var train = CreateTestTrain("07:00", "TONCE");
+        var now = MoscowUtc(date, new TimeOnly(6, 0));
+        Require(scheduler.SetReminder(date, train, 20, now) == TrainReminderOperationResult.Saved,
+            "the one-time reminder was not created");
+
+        var notifier = new RecordingTrainReminderNotifier();
+        var due = MoscowUtc(date, new TimeOnly(6, 40));
+        var restartedBeforeDue = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        restartedBeforeDue.Initialize();
+        Require(restartedBeforeDue.ProcessDue(due, notifier) == 1 && notifier.Notifications.Count == 1,
+            "the due reminder was not delivered");
+        Require(restartedBeforeDue.ProcessDue(due, notifier) == 0,
+            "the same due reminder was delivered twice in one process");
+
+        var restartedAfterDue = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        restartedAfterDue.Initialize();
+        Require(restartedAfterDue.ProcessDue(due, notifier) == 0 && notifier.Notifications.Count == 1 &&
+            restartedAfterDue.Reminders.Single().NotificationSent &&
+            restartedAfterDue.Reminders.Single().NotificationSentAt == due,
+            "a sent reminder was repeated after restarting the scheduler");
+    });
+}
+
+void TestSimultaneousReminders()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var scheduler = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        scheduler.Initialize();
+        var date = new DateOnly(2026, 11, 18);
+        var now = MoscowUtc(date, new TimeOnly(6, 0));
+        var first = CreateTestTrain("07:00", "TSAME1");
+        var second = CreateTestTrain("07:00", "TSAME2");
+        var disabled = CreateTestTrain("07:30", "TDISABLED");
+        Require(scheduler.SetReminder(date, first, 20, now) == TrainReminderOperationResult.Saved &&
+            scheduler.SetReminder(date, second, 20, now) == TrainReminderOperationResult.Saved &&
+            scheduler.SetReminder(date, disabled, 10, now) == TrainReminderOperationResult.Saved,
+            "multiple reminders were not stored");
+        var disabledId = TrainDepartureReminder.CreateId(date, disabled);
+        Require(scheduler.SetEnabled(disabledId, false, now) == TrainReminderOperationResult.Saved,
+            "the third reminder was not disabled");
+
+        var notifier = new RecordingTrainReminderNotifier();
+        var due = MoscowUtc(date, new TimeOnly(6, 40));
+        Require(scheduler.ProcessDue(due, notifier) == 2 &&
+            notifier.Notifications.Select(reminder => reminder.TrainNumber)
+                .Order().SequenceEqual(["TSAME1", "TSAME2"]),
+            "simultaneous enabled reminders were not both delivered");
+        Require(scheduler.ProcessDue(due, notifier) == 0 && notifier.Notifications.Count == 2,
+            "simultaneous reminders were repeated");
+    });
+}
+
+void TestMissedAndDepartedReminders()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var scheduler = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        scheduler.Initialize();
+        var date = new DateOnly(2026, 11, 18);
+        var now = MoscowUtc(date, new TimeOnly(6, 0));
+        var missed = CreateTestTrain("07:00", "TMISSED");
+        Require(scheduler.SetReminder(date, missed, 20, now) == TrainReminderOperationResult.Saved,
+            "the missed reminder fixture was not saved");
+        var afterNotify = MoscowUtc(date, new TimeOnly(6, 42));
+        var notifier = new RecordingTrainReminderNotifier();
+        Require(scheduler.ProcessDue(afterNotify, notifier) == 0 &&
+            notifier.Notifications.Count == 0 &&
+            !scheduler.Reminders.Single(reminder => reminder.TrainNumber == "TMISSED").Enabled,
+            "a reminder missed by more than the delivery tolerance was sent late");
+        Require(scheduler.SetReminder(date, CreateTestTrain("07:00", "TTOOLATE"), 20, afterNotify) ==
+            TrainReminderOperationResult.NotificationTimePassed,
+            "a newly configured, already-overdue reminder was not rejected");
+
+        var departed = CreateTestTrain("07:30", "TDEPARTED");
+        Require(scheduler.SetReminder(date, departed, 10, now) == TrainReminderOperationResult.Saved,
+            "the departed-train fixture was not saved");
+        Require(scheduler.ProcessDue(MoscowUtc(date, new TimeOnly(7, 31)), notifier) == 0 &&
+            notifier.Notifications.Count == 0 &&
+            !scheduler.Reminders.Single(reminder => reminder.TrainNumber == "TDEPARTED").Enabled,
+            "a reminder for a departed train was sent");
+    });
+}
+
+void TestReminderMidnightRollover()
+{
+    WithTempReminderStore(directory =>
+    {
+        var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var scheduler = new TrainReminderScheduler(new TrainReminderStore(directory), timeZone);
+        scheduler.Initialize();
+        var departureDate = new DateOnly(2026, 11, 19);
+        var train = CreateTestTrain("00:15", "TMIDNIGHT");
+        var now = MoscowUtc(new DateOnly(2026, 11, 18), new TimeOnly(23, 0));
+        Require(scheduler.SetReminder(departureDate, train, 30, now) == TrainReminderOperationResult.Saved,
+            "the after-midnight train reminder was not created");
+        var reminder = scheduler.Reminders.Single();
+        var notifyAtLocal = scheduler.GetNotifyAtLocal(reminder);
+        Require(DateOnly.FromDateTime(notifyAtLocal.DateTime) == new DateOnly(2026, 11, 18) &&
+            TimeOnly.FromDateTime(notifyAtLocal.DateTime) == new TimeOnly(23, 45),
+            "the notification time did not roll back to the previous Moscow date");
+        var notifier = new RecordingTrainReminderNotifier();
+        Require(scheduler.ProcessDue(MoscowUtc(new DateOnly(2026, 11, 18), new TimeOnly(23, 45)), notifier) == 1,
+            "the previous-day notification was not delivered");
+
+        var secondTrain = CreateTestTrain("00:45", "TNEXTDAY");
+        Require(scheduler.SetReminder(departureDate, secondTrain, 30, now) == TrainReminderOperationResult.Saved,
+            "the next-day reminder fixture was not saved");
+        Require(scheduler.ProcessDue(MoscowUtc(departureDate, new TimeOnly(00, 15)), notifier) == 1,
+            "the notification was not delivered after the local date changed");
+    });
+}
+
+void WithTempReminderStore(Action<string> test)
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"NOVA-Reminder-Tests-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        test(directory);
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+ScheduledTrain CreateTestTrain(string departure, string trainNumber, string? arrival = null)
+{
+    var departureTime = TimeOnly.ParseExact(departure, "HH:mm", CultureInfo.InvariantCulture);
+    var arrivalTime = TimeOnly.ParseExact(
+        arrival ?? TimeOnly.FromTimeSpan(departureTime.ToTimeSpan().Add(TimeSpan.FromMinutes(30)))
+            .ToString("HH:mm", CultureInfo.InvariantCulture),
+        "HH:mm",
+        CultureInfo.InvariantCulture);
+    return new ScheduledTrain(
+        departureTime,
+        arrivalTime,
+        arrivalTime < departureTime ? 1 : 0,
+        trainNumber);
+}
+
+DateTimeOffset MoscowUtc(DateOnly date, TimeOnly time)
+{
+    var timeZone = LocalTrainScheduleService.GetMoscowTimeZone()
+        ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+    var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
+    return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, timeZone), TimeSpan.Zero);
 }
 
 string CreateScheduleFixture(
@@ -631,4 +931,11 @@ AudioBeatSample ProcessBlock(AudioBandAnalyzer analyzer, ReadOnlySpan<float> sam
 void Require(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
+}
+
+sealed class RecordingTrainReminderNotifier : ITrainReminderNotifier
+{
+    public List<TrainDepartureReminder> Notifications { get; } = [];
+
+    public void Show(TrainDepartureReminder reminder) => Notifications.Add(reminder);
 }

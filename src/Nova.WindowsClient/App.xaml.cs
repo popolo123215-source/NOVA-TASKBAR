@@ -5,8 +5,11 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Windows.Threading;
 using Application = System.Windows.Application;
+using CommunityToolkit.WinUI.Notifications;
 using Nova.TransferEngine;
+using Nova.WindowsClient.Services;
 
 namespace Nova.WindowsClient;
 
@@ -22,6 +25,7 @@ public partial class App : Application
     private Icon? _novaIcon;
     private ShellWindow? _window;
     private LocalTransferService? _transferService;
+    private DispatcherTimer? _trainReminderTimer;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -32,8 +36,19 @@ public partial class App : Application
 
         var stateDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NOVA", "TaskBar");
         _transferService = new LocalTransferService(stateDirectory);
-        _window = new ShellWindow(_transferService);
+        var schedule = LocalTrainScheduleService.LoadDefault();
+        var reminderScheduler = new TrainReminderScheduler(
+            new TrainReminderStore(stateDirectory),
+            schedule.TimeZone ?? LocalTrainScheduleService.GetMoscowTimeZone());
+        reminderScheduler.Initialize();
+        var reminderNotifier = new WindowsToastNotificationService();
+        _window = new ShellWindow(_transferService, reminderScheduler);
         InitializeTray();
+        ToastNotificationManagerCompat.OnActivated += _ => Dispatcher.BeginInvoke(new Action(ShowPanel));
+        _trainReminderTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        _trainReminderTimer.Tick += (_, _) =>
+            reminderScheduler.ProcessDue(DateTimeOffset.UtcNow, reminderNotifier);
+        _trainReminderTimer.Start();
         _transferService.IncomingOffer += OnIncomingOffer;
         _transferService.WebRtcIncomingOffer += OnWebRtcIncomingOffer;
         MainWindow = _window;
@@ -95,6 +110,7 @@ public partial class App : Application
     {
         if (_shutdownInProgress) return;
         _shutdownInProgress = true;
+        _trainReminderTimer?.Stop();
         if (_transferService is not null)
         {
             await _transferService.DisposeAsync();
@@ -107,6 +123,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _trainReminderTimer?.Stop();
         _trayIcon?.Dispose();
         _trayMenu?.Dispose();
         _novaIcon?.Dispose();

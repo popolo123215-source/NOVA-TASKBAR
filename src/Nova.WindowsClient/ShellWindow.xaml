@@ -320,24 +320,135 @@
               </Grid>
             </Border>
             <Grid Grid.Row="2" Margin="0,12,0,8">
-              <TextBlock x:Name="ScheduleEmptyStateText" Text="Загрузка локального расписания…" Foreground="{StaticResource MutedInk}" FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center"/>
-              <ItemsControl x:Name="ScheduleTrainsList" Visibility="Collapsed">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate>
-                    <Border CornerRadius="12" Background="#18FFFFFF" Padding="11,9" Margin="0,0,0,7">
-                      <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding Departure}" Foreground="{StaticResource Ink}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                          <TextBlock Text="{Binding Arrival}" Foreground="{StaticResource PanelInk}" FontSize="11"/>
-                          <TextBlock Text="{Binding ArrivalDayNote}" Foreground="{StaticResource MutedInk}" FontSize="9"/>
-                        </StackPanel>
-                        <TextBlock Grid.Column="2" Text="{Binding TrainNumber}" Foreground="#FFF0A84B" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
+              <Grid x:Name="ScheduleMainView">
+                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid>
+                  <TextBlock x:Name="ScheduleEmptyStateText" Text="Загрузка локального расписания…" Foreground="{StaticResource MutedInk}" FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl x:Name="ScheduleTrainsList" Visibility="Collapsed">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Button Tag="{Binding}" Click="ScheduleTrain_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Stretch" Margin="0,0,0,6">
+                            <Border CornerRadius="12" Background="#18FFFFFF" Padding="11,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <TextBlock Grid.RowSpan="2" Text="{Binding Departure}" Foreground="{StaticResource Ink}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Arrival}" Foreground="{StaticResource PanelInk}" FontSize="11" Margin="10,0,0,0"/>
+                                <TextBlock Grid.Column="1" Grid.Row="1" Text="{Binding ReminderHint}" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="10,2,0,0"/>
+                                <TextBlock Grid.Column="2" Text="{Binding TrainNumber}" Foreground="#FFF0A84B" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                              </Grid>
+                            </Border>
+                          </Button>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </Grid>
+                <WrapPanel Grid.Row="1" Margin="0,8,0,0">
+                  <Button x:Name="ScheduleAllTrainsButton" Style="{StaticResource SmallButton}" Content="Все рейсы сегодня" Click="ScheduleAllTrains_Click" Margin="0,0,6,0" Padding="9,5"/>
+                  <Button x:Name="ScheduleRemindersButton" Style="{StaticResource SmallButton}" Content="Напоминания (0)" Click="ScheduleReminders_Click" Padding="9,5"/>
+                </WrapPanel>
+              </Grid>
+              <Grid x:Name="ScheduleAllTrainsView" Visibility="Collapsed">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <DockPanel Margin="0,0,0,8">
+                  <Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Назад" Click="SchedulePageBack_Click" Padding="9,5"/>
+                  <StackPanel>
+                    <TextBlock Text="Все рейсы на сегодня" Foreground="{StaticResource Ink}" FontSize="17" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="ScheduleAllDateText" Text="" Foreground="{StaticResource MutedInk}" FontSize="10" Margin="0,2,0,0"/>
+                  </StackPanel>
+                </DockPanel>
+                <Grid Grid.Row="1">
+                  <TextBlock x:Name="ScheduleAllEmptyStateText" Text="" Foreground="{StaticResource MutedInk}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl x:Name="ScheduleAllTrainsList">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Button Tag="{Binding}" Click="ScheduleTrain_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Stretch" Margin="0,0,0,6">
+                            <Border CornerRadius="12" Background="#18FFFFFF" Padding="11,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <TextBlock Grid.RowSpan="2" Text="{Binding Departure}" Foreground="{StaticResource Ink}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Arrival}" Foreground="{StaticResource PanelInk}" FontSize="11" Margin="10,0,0,0"/>
+                                <TextBlock Grid.Column="1" Grid.Row="1" Text="{Binding ReminderHint}" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="10,2,0,0"/>
+                                <TextBlock Grid.Column="2" Text="{Binding TrainNumber}" Foreground="#FFF0A84B" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                              </Grid>
+                            </Border>
+                          </Button>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </Grid>
+              </Grid>
+              <ScrollViewer x:Name="ScheduleReminderEditorView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                  <DockPanel Margin="0,0,0,8">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Назад" Click="SchedulePageBack_Click" Padding="9,5"/>
+                    <TextBlock x:Name="ScheduleReminderEditorTitle" Text="Напоминание" Foreground="{StaticResource Ink}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                  </DockPanel>
+                  <TextBlock x:Name="ScheduleReminderTrainText" Text="" Foreground="{StaticResource PanelInk}" FontSize="14" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="ScheduleReminderDetailsText" Text="" Foreground="{StaticResource MutedInk}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                  <TextBlock Text="Оповестить меня за:" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                  <ComboBox x:Name="ScheduleReminderLeadComboBox" SelectionChanged="ScheduleReminderLeadComboBox_SelectionChanged" Background="#1FFFFFFF" Foreground="{StaticResource Ink}" Padding="6,4">
+                    <ComboBoxItem Content="10 минут" Tag="10"/>
+                    <ComboBoxItem Content="20 минут" Tag="20"/>
+                    <ComboBoxItem Content="30 минут" Tag="30"/>
+                    <ComboBoxItem Content="Свой вариант" Tag="custom"/>
+                  </ComboBox>
+                  <StackPanel x:Name="ScheduleReminderCustomPanel" Visibility="Collapsed" Margin="0,9,0,0">
+                    <TextBlock Text="Количество минут (1–1440)" Foreground="{StaticResource MutedInk}" FontSize="10" Margin="0,0,0,4"/>
+                    <TextBox x:Name="ScheduleReminderCustomMinutesBox" Text="" Width="110" HorizontalAlignment="Left" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5"/>
+                  </StackPanel>
+                  <TextBlock x:Name="ScheduleReminderStatusText" Text="" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                  <WrapPanel Margin="0,12,0,0">
+                    <Button x:Name="ScheduleReminderSaveButton" Style="{StaticResource SmallButton}" Content="Сохранить" Click="ScheduleReminderSave_Click" Margin="0,0,6,6" Padding="9,5"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Отмена" Click="ScheduleReminderCancel_Click" Margin="0,0,6,6" Padding="9,5"/>
+                    <Button x:Name="ScheduleReminderDisableButton" Style="{StaticResource SmallButton}" Content="Отключить" Click="ScheduleReminderDisable_Click" Visibility="Collapsed" Margin="0,0,6,6" Padding="9,5"/>
+                    <Button x:Name="ScheduleReminderDeleteButton" Style="{StaticResource SmallButton}" Content="Удалить" Click="ScheduleReminderDelete_Click" Visibility="Collapsed" Margin="0,0,6,6" Padding="9,5"/>
+                  </WrapPanel>
+                </StackPanel>
+              </ScrollViewer>
+              <Grid x:Name="ScheduleRemindersView" Visibility="Collapsed">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel Margin="0,0,0,8">
+                  <Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Назад" Click="SchedulePageBack_Click" Padding="9,5"/>
+                  <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Напоминания" Foreground="{StaticResource Ink}" FontSize="17" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="ScheduleRemindersCountText" Text="0 активных" Foreground="{StaticResource MutedInk}" FontSize="10" VerticalAlignment="Center" Margin="8,2,0,0"/>
+                  </StackPanel>
+                </DockPanel>
+                <Grid Grid.Row="1">
+                  <TextBlock x:Name="ScheduleRemindersEmptyStateText" Text="Пока нет сохранённых напоминаний." Foreground="{StaticResource MutedInk}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl x:Name="ScheduleRemindersList">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+                            <StackPanel>
+                              <Button Tag="{Binding}" Click="ScheduleReminderEdit_Click" Background="Transparent" BorderThickness="0" Padding="0" HorizontalContentAlignment="Stretch">
+                                <StackPanel>
+                                  <TextBlock Text="{Binding DepartureText}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                  <TextBlock Text="{Binding NotificationText}" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,3,0,0"/>
+                                  <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="0,3,0,0"/>
+                                </StackPanel>
+                              </Button>
+                              <WrapPanel Margin="0,7,0,0">
+                                <Button Tag="{Binding}" Style="{StaticResource SmallButton}" Content="{Binding ToggleText}" Click="ScheduleReminderToggle_Click" IsEnabled="{Binding CanToggle}" Margin="0,0,5,0" Padding="7,4"/>
+                                <Button Tag="{Binding}" Style="{StaticResource SmallButton}" Content="Изменить" Click="ScheduleReminderEdit_Click" Margin="0,0,5,0" Padding="7,4"/>
+                                <Button Tag="{Binding}" Style="{StaticResource SmallButton}" Content="Удалить" Click="ScheduleReminderRemove_Click" Padding="7,4"/>
+                              </WrapPanel>
+                            </StackPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </Grid>
+                <TextBlock x:Name="ScheduleRemindersStatusText" Grid.Row="2" Text="Уведомления работают и при скрытой панели NOVA." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </Grid>
             </Grid>
             <StackPanel Grid.Row="3">
               <TextBlock x:Name="ScheduleStatusText" Text="" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap"/>

@@ -86,10 +86,12 @@ public partial class ShellWindow : Window
     private bool _browserAdaptationEnabled;
     private bool _obsSnapshotInProgress;
 
-    public ShellWindow(LocalTransferService transferService)
+    internal ShellWindow(LocalTransferService transferService, TrainReminderScheduler trainReminderScheduler)
     {
         InitializeComponent();
         _transferService = transferService;
+        _trainReminderScheduler = trainReminderScheduler;
+        InitializeTrainScheduleUi();
         _browserWindowAdapter = new BrowserWindowAdapter(GetCapsuleBoundsForAdaptation);
         _browserWindowAdapter.StatusChanged += status => BrowserAdaptationStatusText.Text = status;
         _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };

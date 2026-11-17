@@ -649,3 +649,24 @@ Research references:
 - Published EXE SHA-256: `45339042D8836DD3D485B6668A63DB0683B3B75921134BA26DD6E93405F5FE6F`. The EXE PE machine type is `0x8664` (x64). Native DLL SHA-256: `D20B95A4BD449CE7E444F9A5C491F1775A24CFB90CC481EBC5E6628F6652BB3F`.
 - Updated and read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; its target, working directory, and icon now point to the v10 publish folder.
 - **PUBLISH VERIFIED.** The EXE, schedule TXT, native DLL, runtime configuration, and shortcut target all exist. **RUNTIME / GUI VERIFIED: NOT VERIFIED**; the newly published EXE was not launched.
+
+## Train departure reminders — local publish v12 (2026-11-18)
+
+### Implemented
+
+- Added an all-trains view for the current Moscow date so users can choose any listed departure, not just the three upcoming rows. The editor supports 10/20/30-minute presets and custom whole minutes from 1 through 1440, with explicit rejection of invalid input and cancellation.
+- Added a versioned JSON store at `%LOCALAPPDATA%\NOVA\TaskBar\train-reminders.json`. Each record keeps a stable SHA-256 train/date ID, route, departure/arrival, train number, lead time, enabled state, and delivery state. Writes use a temporary file in the same directory followed by replacement; corrupt or unknown-format data is reported rather than silently overwritten.
+- Added reminder management for editing, disabling/re-enabling, and deleting multiple records. Re-selecting the same train updates its existing record.
+- Added a 15-second application-level scheduler and real Windows Toast delivery through `CommunityToolkit.WinUI.Notifications`. The scheduler runs independently of window visibility; closing the panel hides it to the tray. Explicitly exiting NOVA stops the scheduler; pending reminders remain stored, and expired alerts are not replayed after their departure.
+- The scheduler records a notification claim before handing it to Windows to avoid duplicate delivery after restart. A process crash in the small interval between the claim and OS delivery can therefore lose that one notification; Windows toast history and NOVA storage cannot be updated transactionally.
+- Moscow wall-clock departures are converted through `Europe/Moscow`; the scheduler handles previous-day notification times and disables reminders whose departure or notification window has passed.
+
+### Verification
+
+- **BUILD VERIFIED:** Windows-client Debug was built through the client test harness; Release build and self-contained `win-x64` publish completed with 0 warnings and 0 errors.
+- **FUNCTIONAL VERIFIED:** the client harness passed **29/29** checks, including preset/custom validation, persistence across scheduler reload, update/disable/re-enable/delete, one-time delivery after restart, simultaneous reminders, missed/departed trains, all departures for a date, and Moscow midnight rollover.
+- **WINDOWS TOAST API VERIFIED:** the production `WindowsToastNotificationService` sent a real test toast from a windowless harness process; `ToastNotificationManagerCompat` history contained the expected tag and group. This verifies OS acceptance/history, not whether a popup is visually shown under Focus Assist or user notification settings.
+- **PUBLISH VERIFIED:** local self-contained publish is in `build/NOVA-Taskbar-Release-v12/publish/`; the 492-entry ZIP is 85,407,954 bytes and contains the EXE, managed assembly, native WebRTC library, Toast dependency, runtime configuration, and local schedule. ZIP paths were verified portable; SHA-256 is `926391793716a236ca50ccc305a20d249549865b3e21fa2b554115bd704537b9`.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` now points to the v12 publish EXE, working directory, and icon.
+- **RUNTIME / GUI / scheduled hidden-panel end-to-end: NOT VERIFIED.** The already-running single-instance v11 process was left untouched, so the v12 UI and actual timer-to-toast reminder flow were not launched. The direct Toast smoke test ran without a WPF window; scheduler timing and lifecycle were covered with a recording notifier.
+- The GitHub `v6.0.3` release replacement is pending the source push and release-asset update; no `v6.0.4` release is being created.

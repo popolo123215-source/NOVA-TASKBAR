@@ -45,9 +45,18 @@ internal sealed record TrainScheduleView(
     bool IsPartial = false,
     string? DataNote = null);
 
+internal sealed record TrainScheduleDayView(
+    DateOnly Date,
+    bool IsWeekend,
+    TrainScheduleState State,
+    IReadOnlyList<ScheduledTrain> Trains,
+    IReadOnlyList<string> Warnings,
+    bool IsPartial = false,
+    string? DataNote = null);
+
 internal static class LocalTrainScheduleService
 {
-    private const string TimeZoneId = "Europe/Moscow";
+    internal const string TimeZoneId = "Europe/Moscow";
     private const string RouteId = "TSARSKOE_SELO -> KUPCHINO";
 
     public static LocalTrainSchedule LoadDefault() =>
@@ -244,15 +253,9 @@ internal static class LocalTrainScheduleService
             }
         }
 
-        TimeZoneInfo? timeZone = null;
-        try
-        {
-            timeZone = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
-        }
-        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            errors.Add($"Часовой пояс {TimeZoneId} недоступен: {ex.Message}");
-        }
+        var timeZone = TryGetTimeZone();
+        if (timeZone is null)
+            errors.Add($"Часовой пояс {TimeZoneId} недоступен в Windows.");
 
         return new LocalTrainSchedule(
             isVerified && errors.Count == 0,
@@ -277,10 +280,35 @@ internal static class LocalTrainScheduleService
 
         var localNow = TimeZoneInfo.ConvertTime(utcNow, schedule.TimeZone);
         var localDate = DateOnly.FromDateTime(localNow.DateTime);
-        var isWeekend = localDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+        var day = GetTrainsForDate(schedule, localDate);
+        if (day.State is not (TrainScheduleState.Available or TrainScheduleState.PartiallyAvailable))
+            return new TrainScheduleView(
+                localNow, day.IsWeekend, day.State, [], day.Warnings, day.IsPartial, day.DataNote);
 
-        if (schedule.Error is not null)
-            return new TrainScheduleView(localNow, isWeekend, TrainScheduleState.Invalid, [], schedule.Warnings);
+        var currentTime = TimeOnly.FromDateTime(localNow.DateTime);
+        var upcoming = day.Trains
+            .Where(train => train.Departure > currentTime)
+            .OrderBy(train => train.Departure)
+            .Take(3)
+            .ToArray();
+        return new TrainScheduleView(
+            localNow,
+            day.IsWeekend,
+            upcoming.Length == 0
+                ? TrainScheduleState.NoUpcomingTrains
+                : day.State,
+            upcoming,
+            day.Warnings,
+            day.IsPartial,
+            day.DataNote);
+    }
+
+    public static TrainScheduleDayView GetTrainsForDate(LocalTrainSchedule schedule, DateOnly localDate)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        var isWeekend = localDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+        if (schedule.TimeZone is null || schedule.Error is not null)
+            return new TrainScheduleDayView(localDate, isWeekend, TrainScheduleState.Invalid, [], schedule.Warnings);
 
         var trains = localDate.DayOfWeek switch
         {
@@ -290,33 +318,25 @@ internal static class LocalTrainScheduleService
             _ => schedule.Weekdays
         };
         if (trains.Count == 0)
-            return new TrainScheduleView(
-                localNow, isWeekend, TrainScheduleState.NoScheduleData, [], schedule.Warnings,
+            return new TrainScheduleDayView(
+                localDate, isWeekend, TrainScheduleState.NoScheduleData, [], schedule.Warnings,
                 schedule.IsPartial, schedule.DataNote);
         if (!schedule.IsVerified && !schedule.IsPartial)
-            return new TrainScheduleView(localNow, isWeekend, TrainScheduleState.Unverified, [], schedule.Warnings);
+            return new TrainScheduleDayView(localDate, isWeekend, TrainScheduleState.Unverified, [], schedule.Warnings);
         if (schedule.EffectiveFrom is { } effectiveFrom && localDate < effectiveFrom)
-            return new TrainScheduleView(
-                localNow, isWeekend, TrainScheduleState.NotYetEffective, [], schedule.Warnings,
+            return new TrainScheduleDayView(
+                localDate, isWeekend, TrainScheduleState.NotYetEffective, [], schedule.Warnings,
                 schedule.IsPartial, schedule.DataNote);
         if (schedule.EffectiveThrough is { } effectiveThrough && localDate > effectiveThrough)
-            return new TrainScheduleView(
-                localNow, isWeekend, TrainScheduleState.Expired, [], schedule.Warnings,
+            return new TrainScheduleDayView(
+                localDate, isWeekend, TrainScheduleState.Expired, [], schedule.Warnings,
                 schedule.IsPartial, schedule.DataNote);
 
-        var currentTime = TimeOnly.FromDateTime(localNow.DateTime);
-        var upcoming = trains
-            .Where(train => train.Departure > currentTime)
-            .OrderBy(train => train.Departure)
-            .Take(3)
-            .ToArray();
-        return new TrainScheduleView(
-            localNow,
+        return new TrainScheduleDayView(
+            localDate,
             isWeekend,
-            upcoming.Length == 0
-                ? TrainScheduleState.NoUpcomingTrains
-                : schedule.IsPartial ? TrainScheduleState.PartiallyAvailable : TrainScheduleState.Available,
-            upcoming,
+            schedule.IsPartial ? TrainScheduleState.PartiallyAvailable : TrainScheduleState.Available,
+            trains,
             schedule.Warnings,
             schedule.IsPartial,
             schedule.DataNote);
@@ -331,11 +351,24 @@ internal static class LocalTrainScheduleService
         {
             return TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
         }
-        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        catch (TimeZoneNotFoundException)
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Russian Standard Time");
+            }
+            catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                return null;
+            }
+        }
+        catch (InvalidTimeZoneException)
         {
             return null;
         }
     }
+
+    internal static TimeZoneInfo? GetMoscowTimeZone() => TryGetTimeZone();
 
     private static void RequireMetadata(
         IReadOnlyDictionary<string, string> metadata,
