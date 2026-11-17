@@ -574,3 +574,13 @@ Research references:
 - Updated and read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; target, working directory and icon now point to the v5 publish directory.
 - Release build completed and the Windows client tests passed **15/15**. `git diff --check` passed; Git reported only its existing LF/CRLF normalization warnings.
 - **GUI/runtime of v5: NOT VERIFIED.** The previous v4 single-instance process (PID 9080) was left running and was not replaced. Close that instance normally before launching the desktop shortcut to start v5.
+
+## Startup fix and downloadable v6 release (2026-11-17)
+
+- Reproduced the reported launch failure from Windows Application logs and by starting the published EXE. Startup threw `System.ArgumentException: Delegate to an instance method cannot have null 'this'` in `ShellWindow.RegisterWidgets`; the OBS widget's `onDeactivated: _obsRefreshTimer.Stop` method-group was created before the constructor initialized `_obsRefreshTimer`.
+- Moved the settings, device-refresh, and OBS-refresh timer initialization ahead of widget registration. This ensures callbacks are constructed only after their timer dependencies exist.
+- Published a self-contained x64 build to `build/NOVA-Taskbar-Release-v6/publish/` and packaged all 490 files as `build/NOVA-Taskbar-v6-win-x64.zip`. The ZIP SHA-256 is `54197141E3DE69B2275CE61815BAD1A3A0849F73A71D87066A30D7BE507C1605`; the archive was checked for the apphost, managed assembly, native WebRTC DLL, and runtime configuration.
+- `dotnet build src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --no-restore` — **BUILD VERIFIED**, 0 warnings and 0 errors. Client tests — **15/15 passed**.
+- Launched the published v6 EXE after the fix. Its process remained responsive, and Windows UI Automation observed the visible `Панель NOVA` capsule window — **RUNTIME VERIFIED** and **GUI VERIFIED** for startup.
+- Updated the desktop shortcut to v6. The app is currently running from `build/NOVA-Taskbar-Release-v6/publish/`.
+- The README now distinguishes the source-code ZIP from the runnable GitHub Release archive. Users should download the release ZIP, extract all files together, and run `Nova.TaskBar.exe`; downloading only the EXE will not work because adjacent runtime and native files are required.

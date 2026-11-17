@@ -92,6 +92,12 @@ public partial class ShellWindow : Window
         _transferService = transferService;
         _browserWindowAdapter = new BrowserWindowAdapter(GetCapsuleBoundsForAdaptation);
         _browserWindowAdapter.StatusChanged += status => BrowserAdaptationStatusText.Text = status;
+        _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _settingsSaveTimer.Tick += (_, _) => { _settingsSaveTimer.Stop(); SavePreferences(); };
+        _deviceRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _deviceRefreshTimer.Tick += (_, _) => RefreshDevices();
+        _obsRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _obsRefreshTimer.Tick += async (_, _) => await RefreshObsSnapshotAsync();
         _widgetHost = new WidgetHost(WidgetPages, _widgetRegistry);
         RegisterWidgets();
         WidgetNavigationList.ItemsSource = _widgetRegistry.Widgets;
@@ -105,12 +111,6 @@ public partial class ShellWindow : Window
             .FirstOrDefault(item => item.Tag is string tag &&
                 tag == transferService.Settings.TransportPreference.ToString());
         _loadingTransportPreference = false;
-        _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
-        _settingsSaveTimer.Tick += (_, _) => { _settingsSaveTimer.Stop(); SavePreferences(); };
-        _deviceRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _deviceRefreshTimer.Tick += (_, _) => RefreshDevices();
-        _obsRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _obsRefreshTimer.Tick += async (_, _) => await RefreshObsSnapshotAsync();
 
         DevicesList.ItemsSource = _devices;
         OutgoingFilesList.ItemsSource = _outgoingFiles;
