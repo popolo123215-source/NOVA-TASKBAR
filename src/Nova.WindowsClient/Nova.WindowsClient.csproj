@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\build\native-x64\Release\nova_webrtc.dll" Link="nova_webrtc.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\build\native-x64\Release\nova_webrtc.dll')" />
+    <Content Include="..\..\assets\schedules\tsarskoe_selo_kupchino.txt" Link="assets\schedules\tsarskoe_selo_kupchino.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

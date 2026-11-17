@@ -166,6 +166,8 @@ public partial class ShellWindow
         var now = DateTime.Now;
         ClockText.Text = now.ToString("HH:mm", CultureInfo.InvariantCulture);
         ClockDateText.Text = now.ToString("ddd, d MMM", CultureInfo.GetCultureInfo("ru-RU"));
+        if (_widgetHost.SelectedWidget?.Id == "Schedule")
+            RefreshTrainSchedule();
     }
 
     private void UpdateMediaUi()
@@ -227,6 +229,7 @@ public partial class ShellWindow
         _lyricsLines.Clear();
         LyricsLinesList.Visibility = Visibility.Collapsed;
         PlainLyricsScroll.Visibility = Visibility.Collapsed;
+        PlainLyricsText.Text = "";
         LyricsSourceStatusText.Text = "";
         LyricsStatusText.Visibility = Visibility.Visible;
         LyricsStatusText.Text = hasTrack
@@ -266,6 +269,8 @@ public partial class ShellWindow
         _lyricsCancellation = cancellation;
         LyricsLinesList.Visibility = Visibility.Collapsed;
         PlainLyricsScroll.Visibility = Visibility.Collapsed;
+        PlainLyricsText.Text = "";
+        LyricsSourceStatusText.Text = "";
         LyricsStatusText.Visibility = Visibility.Visible;
         LyricsStatusText.Text = "Ищем точное совпадение трека и запрашиваем LRC…";
 
@@ -285,11 +290,10 @@ public partial class ShellWindow
 
             if (_lyricsLines.Count > 0)
             {
-                LyricsStatusText.Visibility = Visibility.Collapsed;
+                LyricsStatusText.Text = $"Текст найден · синхронных строк: {_lyricsLines.Count}.";
                 PlainLyricsScroll.Visibility = Visibility.Collapsed;
                 LyricsLinesList.Visibility = Visibility.Visible;
-                LyricsSourceStatusText.Text =
-                    "LRC загружен из Яндекс Музыки. Нажатие на строку перематывает текущую Windows Media Session, если она поддерживает seek.";
+                LyricsSourceStatusText.Text = "Источник: Яндекс Музыка · нажмите строку для перемотки.";
                 SelectCurrentLyricLine();
             }
             else if (!string.IsNullOrWhiteSpace(result.PlainText))
@@ -297,12 +301,13 @@ public partial class ShellWindow
                 LyricsLinesList.Visibility = Visibility.Collapsed;
                 PlainLyricsScroll.Visibility = Visibility.Visible;
                 PlainLyricsText.Text = result.PlainText;
-                LyricsStatusText.Text = "Яндекс Музыка вернула текст без таймкодов; синхронизация и перемотка недоступны.";
-                LyricsSourceStatusText.Text = "Источник: Яндекс Музыка · неофициальный API.";
+                LyricsStatusText.Text = "Текст найден, но без таймкодов; синхронизация недоступна.";
+                LyricsSourceStatusText.Text = "Источник: Яндекс Музыка.";
             }
             else
             {
-                LyricsStatusText.Text = "Яндекс Музыка не вернула текст песни.";
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.NoLyrics);
+                LyricsSourceStatusText.Text = "";
             }
         }
         catch (OperationCanceledException)
@@ -310,47 +315,59 @@ public partial class ShellWindow
             if (IsCurrentLyricsRequest(cancellation, media))
                 LyricsStatusText.Text = cancellation.IsCancellationRequested
                     ? "Загрузка текста отменена."
-                    : "Яндекс Музыка не ответила вовремя. Повторите попытку.";
+                    : "Ошибка сети: Яндекс Музыка не ответила за время ожидания. Повторите попытку.";
         }
-        catch (UnauthorizedAccessException ex)
+        catch (YandexLyricsException ex)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
-                LyricsStatusText.Text = ex.Message;
-        }
-        catch (KeyNotFoundException ex)
-        {
-            if (IsCurrentLyricsRequest(cancellation, media))
-                LyricsStatusText.Text = ex.Message;
+            {
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(ex.Kind, ex.StatusCode);
+                LyricsSourceStatusText.Text = "";
+            }
         }
         catch (HttpRequestException ex)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
-                LyricsStatusText.Text = ex.StatusCode switch
-                {
-                    HttpStatusCode.TooManyRequests => "Яндекс Музыка временно ограничила запросы. Попробуйте позже.",
-                    HttpStatusCode.Forbidden => "Доступ к API Яндекс Музыки запрещён.",
-                    _ => $"Не удалось получить текст из Яндекс Музыки: {ex.Message}"
-                };
+                LyricsStatusText.Text = ex.StatusCode is { } status
+                    ? YandexMusicLyricsService.GetUserFacingFailure(
+                        YandexMusicLyricsService.ClassifyHttpFailure(status, YandexLyricsRequestStage.Lyrics),
+                        status)
+                    : YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.Network);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
-                LyricsStatusText.Text = $"Ответ API Яндекс Музыки не распознан: {ex.Message}";
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.InvalidResponse);
         }
         catch (InvalidDataException ex)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
                 LyricsStatusText.Text = ex.Message;
         }
+        catch (UnauthorizedAccessException)
+        {
+            if (IsCurrentLyricsRequest(cancellation, media))
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.Authorization);
+        }
         catch (ArgumentException ex)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
                 LyricsStatusText.Text = ex.Message;
         }
-        catch (FormatException ex)
+        catch (FormatException)
         {
             if (IsCurrentLyricsRequest(cancellation, media))
-                LyricsStatusText.Text = ex.Message;
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.InvalidResponse);
+        }
+        catch (IOException)
+        {
+            if (IsCurrentLyricsRequest(cancellation, media))
+                LyricsStatusText.Text = YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.Network);
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrentLyricsRequest(cancellation, media))
+                LyricsStatusText.Text = $"Ошибка загрузки текста ({ex.GetType().Name}). Повторите попытку.";
         }
         finally
         {
@@ -1011,7 +1028,7 @@ public partial class ShellWindow
     private void MediaMainGrid_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (MediaArtworkFrame is null) return;
-        var artworkSize = Math.Clamp(e.NewSize.Width * 0.29, 128, 180);
+        var artworkSize = Math.Clamp(e.NewSize.Width * 0.23, 112, 148);
         if (Math.Abs(MediaArtworkFrame.Width - artworkSize) < 1)
             return;
         MediaArtworkFrame.Width = artworkSize;

@@ -600,3 +600,52 @@ Research references:
 - Successful incoming LAN/Direct VPN and WebRTC/relay completion progress now carries the final saved path. NOVA displays that path after the file has been flushed, hash-verified and moved into its final unique filename; sender-side completion does not claim a local save path.
 - Release build passed with 0 warnings and 0 errors. Transfer integration tests passed **22/22**, including exact saved-path assertions for LAN, Direct VPN, WebRTC and TCP/TLS relay. Windows-client tests passed **15/15**. `git diff --check` passed.
 - **Visual verification of the new folder button: NOT VERIFIED** because the user’s already-running instance is an older build; it was not closed during this task.
+
+## Yandex Music lyrics display and diagnostics (2026-11-17)
+
+### Cause and changes
+
+- The LRC request was awaited, but `LyricsLinesList` was never assigned the populated `_lyricsLines` collection. On a successful timed-lyrics response the UI hid the loading/status text and showed an empty list. The existing active v7 window also showed a 2-DIP-high lyrics list, leaving no usable display area.
+- Bound the list to its observable collection, kept a persistent result/status line above it, reserved a minimum lyrics viewport, and compacted the artwork/footer spacing so the list receives usable space in the current workspace.
+- Added distinct user-facing outcomes for exact-track mismatch, missing lyrics, authorization/access rejection, network timeout/failure, API status failures, and malformed responses. HTTP 401/403 are authorization/access errors; 404 is interpreted by request stage. Empty parsed responses become “Текст не найден”. Diagnostics never include the OAuth value or raw HTTP exception text.
+- Cleared stale source/status text at the beginning of each request and cleared old plain text on track changes/retries. Token handling, exact title/artist matching, HTTPS download-domain checks, response-size limits, playback control, seek, WASAPI and audio-reactive code paths remain unchanged.
+
+### Verification
+
+- **BUILD VERIFIED:** Windows client Release build passed with 0 warnings and 0 errors.
+- **FUNCTIONAL VERIFIED (API response observed in the pre-existing runtime):** the running v7 UI showed the real Windows Media Session track “Нежно&небрежно” by “мс улыбочка, onda andar” and the success-only status “LRC загружен из Яндекс Музыки”. That status is set only when the service has returned at least one timed line. The lines were invisible because of the missing collection binding and collapsed layout.
+- Client checks passed **16/16**, including LRC parser behavior, empty-response handling, distinct HTTP/network failure classification and existing audio, OCR, OBS, browser and translation checks. `git diff --check` passed.
+- Published a self-contained `win-x64` build locally to `build/NOVA-Taskbar-Release-v9/publish/` and updated/read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` to target that directory. The publish contains the EXE, managed assembly, native WebRTC library and self-contained .NET runtime files.
+- GitHub was not updated.
+- **GUI VERIFIED for the revised build: NOT VERIFIED.** The active single-instance v7 process was left running to avoid interrupting the user or losing its in-memory OAuth value. The next check is to restart NOVA with the updated desktop shortcut, re-enter the token if needed, and confirm the LRC lines are visible for the same real track.
+- **Live authorization failure, live no-lyrics track, live network failure and post-fix live request: NOT VERIFIED.** Their state mapping is covered by local tests, but no new live API call was made with a token after rebuilding.
+
+## Local train schedule widget — Tsarskoye Selo → Kupchino (2026-11-18)
+
+### Implemented
+
+- Added the **Расписание** widget to the existing `WidgetRegistry`/`WidgetHost` navigation. It shows the Moscow-local date and time, weekday/weekend mode, up to three upcoming departures, arrival time, train number, and the next-day arrival marker when needed.
+- Added a local TXT parser with format/route/time-zone and effective-date validation. Empty lines and comments are ignored; malformed and duplicate rows are reported and skipped without discarding other valid rows. The engine sorts, filters departed trains, chooses the weekday/weekend section using `Europe/Moscow`, and recalculates through the existing one-second clock timer while the widget is selected.
+- Added `PARTIAL` data status: available rows now render without a fully verified validity range. Optional `[SATURDAY]` and `[SUNDAY]` sections override `[WEEKENDS]` when daily source results differ. An empty section is an explicit no-data error; a missing/unreadable file is an explicit load error, not an “unverified” state.
+- The TXT file is copied beside the client output and configured for publish output. The widget makes no runtime network requests and contains no live delay/cancellation data.
+
+### Available source data and limits
+
+- Read the user-provided Yandex schedule pages for the exact route/station IDs on 2026-11-18 (Wednesday), 2026-11-19 (Thursday), 2026-11-21 (Saturday) and 2026-11-22 (Sunday). These are published date-specific results, not a carrier-operated API or a runtime dependency.
+- The weekday section contains **53 exact train/time entries common to both weekday snapshots**; changed weekday rows were excluded. Saturday and Sunday each contain the **48 rows shown for that specific date** and are stored separately: the two weekend snapshots had only one exact number/time match, so treating them as one generic weekend list would be misleading.
+- The production file is marked `DATA_STATUS: PARTIAL`; `DATA_NOTE` identifies sample dates and warns that other dates may differ. The app displays the available list and provides this compact caveat rather than blocking on complete confirmation. These samples do not prove the timetable for other dates or future schedule periods.
+- Train delays/cancellations are not included. Before travelling, users should check the specific date in the live timetable.
+
+### Verification
+
+- **BUILD VERIFIED:** `dotnet build src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --no-restore` passed with 0 warnings and 0 errors.
+- **FUNCTIONAL VERIFIED:** Windows-client checks passed **22/22**, including parsing the production TXT, its exact 53/48/48 row counts, next-three results for Wednesday, Saturday and Sunday, empty/missing-file errors, partial status, and existing client regressions.
+- **GUI VERIFIED: NOT VERIFIED.** An older v10 NOVA instance is already running; it was not closed or interrupted. The updated widget has not yet been opened in a fresh v11 process.
+- **LIVE OPERATIONS VERIFIED: NOT VERIFIED.** Source data is date-specific Yandex timetable output; it was not independently confirmed against the carrier for every trip or for dates beyond the samples.
+
+## Local v10 Release publish (2026-11-18)
+
+- Published a self-contained `win-x64` Release to `build/NOVA-Taskbar-Release-v10/publish/` using `dotnet publish`. The output contains 491 files, including `Nova.TaskBar.exe`, the native WebRTC DLL, bundled runtime files, and `assets/schedules/tsarskoe_selo_kupchino.txt`.
+- Published EXE SHA-256: `45339042D8836DD3D485B6668A63DB0683B3B75921134BA26DD6E93405F5FE6F`. The EXE PE machine type is `0x8664` (x64). Native DLL SHA-256: `D20B95A4BD449CE7E444F9A5C491F1775A24CFB90CC481EBC5E6628F6652BB3F`.
+- Updated and read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; its target, working directory, and icon now point to the v10 publish folder.
+- **PUBLISH VERIFIED.** The EXE, schedule TXT, native DLL, runtime configuration, and shortcut target all exist. **RUNTIME / GUI VERIFIED: NOT VERIFIED**; the newly published EXE was not launched.

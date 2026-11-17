@@ -118,6 +118,7 @@ public partial class ShellWindow : Window
         TransferProgressList.ItemsSource = _activities;
         HistoryList.ItemsSource = _historyRows;
         ObsSceneComboBox.ItemsSource = _obsScenes;
+        LyricsLinesList.ItemsSource = _lyricsLines;
 
         _transferService.IncomingOffer += OnIncomingOffer;
         _transferService.WebRtcIncomingOffer += OnWebRtcIncomingOffer;
@@ -140,6 +141,8 @@ public partial class ShellWindow : Window
         _widgetRegistry.Register(new WidgetDefinition("VPN", "VPN", "Статус и управление Inci", "◇", VpnContent,
             onActivated: RefreshInciStatus));
         _widgetRegistry.Register(new WidgetDefinition("Timer", "Таймер", "Обратный отсчёт и секундомер", "◷", TimerContent));
+        _widgetRegistry.Register(new WidgetDefinition("Schedule", "Расписание", "Царское Село → Купчино · локально", "↦", ScheduleContent,
+            onActivated: () => RefreshTrainSchedule(force: true)));
         _widgetRegistry.Register(new WidgetDefinition("Monitoring", "Мониторинг", "CPU · GPU · RAM", "⌁", SystemContent));
         _widgetRegistry.Register(new WidgetDefinition("OBS", "OBS", "Сцены и запись · OBS WebSocket", "◉", ObsContent,
             onActivated: () =>

@@ -136,7 +136,7 @@
           <StackPanel x:Name="ModuleContent" Visibility="Collapsed" VerticalAlignment="Center"><TextBlock x:Name="ModuleTitle" Text="Удалённое управление" Style="{StaticResource TitleText}"/><TextBlock x:Name="ModuleDescription" Text="Функция не подключена." Foreground="{StaticResource MutedInk}" FontSize="13" TextWrapping="Wrap" Margin="0,8,0,18"/><Border CornerRadius="14" Background="#16FFFFFF" Padding="13"><TextBlock x:Name="ModuleStatus" Text="Недоступно" Foreground="{StaticResource PanelInk}" FontSize="12"/></Border></StackPanel>
           <Grid x:Name="MediaContent" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <Grid Grid.Row="0" x:Name="MediaMainGrid" SizeChanged="MediaMainGrid_SizeChanged" Margin="0,0,0,12">
+            <Grid Grid.Row="0" x:Name="MediaMainGrid" SizeChanged="MediaMainGrid_SizeChanged" Margin="0,0,0,8">
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <Border x:Name="MediaArtworkFrame" Width="160" Height="160" CornerRadius="20" Background="#1FFFFFFF" ClipToBounds="True" HorizontalAlignment="Left">
                 <Grid>
@@ -161,9 +161,10 @@
                   <PasswordBox x:Name="YandexMusicTokenBox" Grid.Column="1" ToolTip="OAuth-токен используется только в памяти текущего запуска NOVA и не записывается в настройки" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" FontSize="10" VerticalContentAlignment="Center"/>
                   <Button Grid.Column="2" Style="{StaticResource SmallButton}" Content="Загрузить" Click="LoadYandexLyrics_Click" Padding="9,5" Margin="7,0,0,0"/>
                 </Grid>
-                <Grid Grid.Row="1" Margin="0,8">
-                  <TextBlock x:Name="LyricsStatusText" Text="Вставьте OAuth-токен Яндекс Музыки и нажмите «Загрузить». Используется неофициальный API; токен не сохраняется." Foreground="{StaticResource PanelInk}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
-                  <ListBox x:Name="LyricsLinesList" Visibility="Collapsed" SelectionChanged="LyricsLinesList_SelectionChanged" Background="Transparent" Foreground="{StaticResource Ink}" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <Grid Grid.Row="1" Margin="0,6">
+                  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                  <TextBlock x:Name="LyricsStatusText" Grid.Row="0" Text="Вставьте OAuth-токен Яндекс Музыки и нажмите «Загрузить». Используется неофициальный API; токен не сохраняется." Foreground="{StaticResource PanelInk}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                  <ListBox x:Name="LyricsLinesList" Grid.Row="1" MinHeight="72" Visibility="Collapsed" SelectionChanged="LyricsLinesList_SelectionChanged" Background="Transparent" Foreground="{StaticResource Ink}" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                     <ListBox.ItemContainerStyle>
                       <Style TargetType="ListBoxItem">
                         <Setter Property="Background" Value="Transparent"/>
@@ -182,19 +183,19 @@
                       <DataTemplate><TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13"/></DataTemplate>
                     </ListBox.ItemTemplate>
                   </ListBox>
-                  <ScrollViewer x:Name="PlainLyricsScroll" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                  <ScrollViewer x:Name="PlainLyricsScroll" Grid.Row="1" MinHeight="72" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <TextBlock x:Name="PlainLyricsText" Foreground="{StaticResource PanelInk}" FontSize="13" TextWrapping="Wrap"/>
                   </ScrollViewer>
                 </Grid>
-                <StackPanel Grid.Row="2" Margin="0,8,0,0">
+                <StackPanel Grid.Row="2" Margin="0,5,0,0">
                   <TextBlock x:Name="MediaStatusText" Text="Ожидание медиасессии Windows…" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap"/>
-                  <TextBlock x:Name="QueueStatusText" Text="Очередь текущей Windows Media Session не раскрыта; очередь аккаунта Яндекс нельзя надёжно сопоставить с выбранной сессией." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
-                  <TextBlock x:Name="LyricsSourceStatusText" Text="" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
-                  <TextBlock x:Name="AudioVisualizationStatusText" Text="Аудиореактивность ожидает воспроизведения." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                  <TextBlock x:Name="QueueStatusText" Text="Очередь не предоставлена Windows Media Session." ToolTip="Очередь аккаунта Яндекс нельзя надёжно сопоставить с выбранной сессией Windows Media Session." Foreground="{StaticResource MutedInk}" FontSize="8" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="LyricsSourceStatusText" Text="" Foreground="{StaticResource MutedInk}" FontSize="8" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="AudioVisualizationStatusText" Text="Аудиореактивность ожидает воспроизведения." Foreground="{StaticResource MutedInk}" FontSize="8" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Margin="0,2,0,0"/>
                 </StackPanel>
               </Grid>
             </Border>
-            <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid Grid.Row="2" Margin="0,8,0,0">
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource SmallButton}" Content="|◀" Click="MediaPrevious_Click" Margin="0,0,6,0"/>
@@ -205,7 +206,7 @@
               <Slider x:Name="MediaProgressSlider" Grid.Column="2" Minimum="0" Maximum="1000" ValueChanged="MediaProgress_ValueChanged" PreviewMouseLeftButtonDown="MediaProgress_DragStarted" PreviewMouseLeftButtonUp="MediaProgress_Seek" Margin="8,0"/>
               <TextBlock x:Name="MediaDurationText" Grid.Column="3" Text="0:00" Foreground="{StaticResource MutedInk}" FontSize="10" VerticalAlignment="Center"/>
             </Grid>
-            <Grid Grid.Row="3" Margin="0,10,0,0">
+            <Grid Grid.Row="3" Margin="0,6,0,0">
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
               <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <TextBlock Text="ГРОМКОСТЬ WINDOWS" Foreground="{StaticResource MutedInk}" FontSize="9" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -305,6 +306,44 @@
             </StackPanel>
             <TextBlock x:Name="TimerStatusText" Text="Готов" Foreground="{StaticResource MutedInk}" FontSize="10" Margin="0,9,0,0"/>
           </StackPanel>
+          <Grid x:Name="ScheduleContent" Visibility="Collapsed">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <StackPanel>
+              <TextBlock Text="ПРИГОРОДНЫЕ ЭЛЕКТРИЧКИ" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
+              <TextBlock Text="Царское Село → Купчино" Foreground="{StaticResource Ink}" FontSize="24" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,5,0,0"/>
+            </StackPanel>
+            <Border Grid.Row="1" CornerRadius="14" Background="#18FFFFFF" Padding="12" Margin="0,12,0,0">
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="ScheduleNowText" Text="Europe/Moscow · —" Foreground="{StaticResource PanelInk}" FontSize="12" VerticalAlignment="Center"/>
+                <TextBlock x:Name="ScheduleDayTypeText" Grid.Column="1" Text="" Foreground="#FFF0A84B" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0"/>
+              </Grid>
+            </Border>
+            <Grid Grid.Row="2" Margin="0,12,0,8">
+              <TextBlock x:Name="ScheduleEmptyStateText" Text="Загрузка локального расписания…" Foreground="{StaticResource MutedInk}" FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center"/>
+              <ItemsControl x:Name="ScheduleTrainsList" Visibility="Collapsed">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="12" Background="#18FFFFFF" Padding="11,9" Margin="0,0,0,7">
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding Departure}" Foreground="{StaticResource Ink}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Arrival}" Foreground="{StaticResource PanelInk}" FontSize="11"/>
+                          <TextBlock Text="{Binding ArrivalDayNote}" Foreground="{StaticResource MutedInk}" FontSize="9"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="{Binding TrainNumber}" Foreground="#FFF0A84B" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </Grid>
+            <StackPanel Grid.Row="3">
+              <TextBlock x:Name="ScheduleStatusText" Text="" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap"/>
+              <TextBlock Text="Только локальный TXT · без онлайн-обновлений, задержек и отмен." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+          </Grid>
           <StackPanel x:Name="SystemContent" Visibility="Collapsed" VerticalAlignment="Center">
             <TextBlock Text="МОНИТОРИНГ" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
             <TextBlock Text="Использование ресурсов" Foreground="{StaticResource Ink}" FontSize="23" FontWeight="SemiBold" Margin="0,7,0,14"/>

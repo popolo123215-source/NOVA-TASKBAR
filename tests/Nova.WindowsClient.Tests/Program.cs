@@ -17,7 +17,14 @@ Run("silence keeps all audio bands at rest", TestSilence);
 Run("bass and treble energy are separated", TestFrequencyBands);
 Run("louder audio produces a stronger level", TestVolumeResponse);
 Run("sharp peaks swell briefly and decay", TestTransientDecay);
+Run("local schedule parser skips invalid and duplicate rows", TestLocalScheduleParsing);
+Run("local schedule selects the three nearest weekday trains", TestWeekdayScheduleSelection);
+Run("local schedule uses weekend data after the Moscow date changes", TestWeekendAndMidnightScheduleSelection);
+Run("local schedule handles arrivals after midnight and unverified data", TestScheduleMidnightAndUnverified);
+Run("partial local schedule is displayed without confirmed validity dates", TestPartialScheduleDisplay);
+Run("production schedule resource loads and returns real listed departures", TestProductionScheduleResource);
 Run("Yandex LRC parser preserves timestamps and untimed text", TestYandexLrcParser);
+Run("Yandex lyrics failures map to distinct user-visible states", TestYandexLyricsFailureClassification);
 Run("OBS WebSocket authentication vector is stable", TestObsAuthentication);
 Run("OBS installation discovery never launches the program", TestObsInstallationDiscovery);
 await RunAsync("OBS WebSocket reads state/scenes and sends recording/scene commands", TestObsWebSocketProtocol);
@@ -102,6 +109,198 @@ void TestTransientDecay()
     Require(settled < peak * 0.05f, $"pulse did not decay ({peak:0.00} -> {settled:0.00})");
 }
 
+void TestLocalScheduleParsing()
+{
+    var schedule = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "09:00 | 09:30 | 6501\n" +
+        "09:00 | 09:30 | 6501\n" +
+        "25:00 | 25:30 | 6502\n" +
+        "10:00 | 10:30 | 6503",
+        "09:15 | 09:45 | 6504"));
+
+    Require(schedule.IsVerified && schedule.Error is null,
+        $"valid metadata was rejected: {schedule.Error}");
+    Require(schedule.Weekdays.Count == 2 && schedule.Weekends.Count == 1,
+        "invalid and duplicate rows were not skipped independently");
+    Require(schedule.Warnings.Count == 2,
+        $"expected two row warnings, got {schedule.Warnings.Count}");
+
+    var repeatedSection = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "09:00 | 09:30 | 6501\n[WEEKDAYS]\n10:00 | 10:30 | 6502",
+        "09:15 | 09:45 | 6504"));
+    Require(repeatedSection.Weekdays.Count == 1 &&
+        repeatedSection.Warnings.Any(warning => warning.Contains("повторная секция", StringComparison.OrdinalIgnoreCase)),
+        "records from a repeated section were not skipped");
+
+    var malformed = LocalTrainScheduleService.Parse("# NOVA LOCAL SCHEDULE\n[WEEKDAYS]\n");
+    var malformedView = LocalTrainScheduleService.GetUpcoming(malformed, DateTimeOffset.UtcNow);
+    Require(malformedView.State == TrainScheduleState.Invalid,
+        "a file missing required metadata did not produce an invalid state");
+}
+
+void TestWeekdayScheduleSelection()
+{
+    var schedule = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "12:00 | 12:30 | 6504\n" +
+        "09:00 | 09:30 | 6501\n" +
+        "11:00 | 11:30 | 6503\n" +
+        "10:00 | 10:30 | 6502",
+        "08:00 | 08:30 | 6599"));
+
+    var view = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 18, 5, 30, 0, TimeSpan.Zero));
+    Require(view.State == TrainScheduleState.Available && !view.IsWeekend,
+        $"weekday schedule was not selected: {view.State}");
+    Require(view.Upcoming.Count == 3 &&
+        view.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6501", "6502", "6503"]),
+        "the three nearest departures were not sorted or selected");
+
+    var later = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 18, 7, 30, 0, TimeSpan.Zero));
+    Require(later.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6503", "6504"]),
+        "departed trains were not filtered or the remaining trains were not retained");
+}
+
+void TestWeekendAndMidnightScheduleSelection()
+{
+    var schedule = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "09:00 | 09:30 | 6501",
+        "09:15 | 09:45 | 6601\n10:15 | 10:45 | 6602"));
+    var weekend = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 21, 6, 0, 0, TimeSpan.Zero));
+    Require(weekend.IsWeekend && weekend.Upcoming[0].TrainNumber == "6601",
+        "the weekend schedule was not selected using Moscow local time");
+
+    var fridayLate = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 20, 20, 59, 0, TimeSpan.Zero));
+    var saturdayEarly = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 20, 21, 0, 0, TimeSpan.Zero));
+    Require(!fridayLate.IsWeekend && fridayLate.State == TrainScheduleState.NoUpcomingTrains &&
+        saturdayEarly.IsWeekend && saturdayEarly.Upcoming[0].TrainNumber == "6601",
+        "the selected day type did not roll over at midnight in Europe/Moscow");
+}
+
+void TestScheduleMidnightAndUnverified()
+{
+    var overnight = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "23:50 | 00:20 | 6701",
+        "23:40 | 00:10 | 6702"));
+    var late = LocalTrainScheduleService.GetUpcoming(
+        overnight,
+        new DateTimeOffset(2026, 11, 20, 20, 30, 0, TimeSpan.Zero));
+    Require(late.Upcoming.Count == 1 && late.Upcoming[0].ArrivalDayOffset == 1,
+        "an arrival after midnight was not marked as occurring on the following day");
+
+    var unverified = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "09:00 | 09:30 | TEST1",
+        "09:15 | 09:45 | TEST2",
+        dataStatus: "UNVERIFIED"));
+    var view = LocalTrainScheduleService.GetUpcoming(
+        unverified,
+        new DateTimeOffset(2026, 11, 18, 5, 0, 0, TimeSpan.Zero));
+    Require(view.State == TrainScheduleState.Unverified && view.Upcoming.Count == 0,
+        "unverified train rows were exposed as operational schedule data");
+}
+
+void TestPartialScheduleDisplay()
+{
+    const string note = "Weekday comparison and Saturday sample.";
+    var partial = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "11:07 | 11:22 | 6330\n12:05 | 12:20 | 6530\n14:21 | 14:36 | 6346",
+        "05:38 | 05:53 | 6502",
+        dataStatus: "PARTIAL",
+        effectiveFrom: "NOT_CONFIRMED",
+        effectiveThrough: "NOT_CONFIRMED",
+        dataNote: note));
+
+    Require(partial.Error is null && partial.IsPartial && !partial.IsVerified,
+        $"partial metadata was rejected: {partial.Error}");
+    var view = LocalTrainScheduleService.GetUpcoming(
+        partial,
+        new DateTimeOffset(2026, 11, 18, 7, 0, 0, TimeSpan.Zero));
+    Require(view.State == TrainScheduleState.PartiallyAvailable &&
+        view.IsPartial && view.Upcoming.Count == 3 && view.DataNote == note,
+        "available partial rows were not returned to the widget");
+
+    var empty = LocalTrainScheduleService.Parse(CreateScheduleFixture(
+        "", "", dataStatus: "PARTIAL",
+        effectiveFrom: "NOT_CONFIRMED",
+        effectiveThrough: "NOT_CONFIRMED"));
+    var emptyView = LocalTrainScheduleService.GetUpcoming(empty, DateTimeOffset.UtcNow);
+    Require(emptyView.State == TrainScheduleState.NoScheduleData,
+        "an empty schedule was misreported as merely unverified");
+
+    var missing = LocalTrainScheduleService.Load(
+        Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.txt"));
+    Require(LocalTrainScheduleService.GetUpcoming(missing, DateTimeOffset.UtcNow).State == TrainScheduleState.Invalid,
+        "a missing schedule file did not produce a load error");
+}
+
+void TestProductionScheduleResource()
+{
+    var path = Path.Combine(
+        Directory.GetCurrentDirectory(),
+        "assets",
+        "schedules",
+        "tsarskoe_selo_kupchino.txt");
+    var schedule = LocalTrainScheduleService.Load(path);
+    var counts = $"weekdays={schedule.Weekdays.Count}, weekends={schedule.Weekends.Count}, " +
+        $"Saturday={schedule.Saturdays.Count}, Sunday={schedule.Sundays.Count}";
+    Require(schedule.Error is null && schedule.IsPartial &&
+        schedule.Weekdays.Count == 53 &&
+        schedule.Weekends.Count == 0 &&
+        schedule.Saturdays.Count == 48 &&
+        schedule.Sundays.Count == 48,
+        $"the production resource was not loaded as expected: {schedule.Error ?? counts}");
+
+    var weekday = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 18, 7, 0, 0, TimeSpan.Zero));
+    var weekdayNumbers = string.Join(", ", weekday.Upcoming.Select(train => train.TrainNumber));
+    Require(weekday.State == TrainScheduleState.PartiallyAvailable &&
+        weekday.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6756", "6322", "6330"]),
+        $"the production weekday list did not produce its next three departures ({weekday.State}: {weekdayNumbers})");
+
+    var weekend = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 21, 6, 0, 0, TimeSpan.Zero));
+    var weekendNumbers = string.Join(", ", weekend.Upcoming.Select(train => train.TrainNumber));
+    Require(weekend.State == TrainScheduleState.PartiallyAvailable &&
+        weekend.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6404", "6520", "6522"]),
+        $"the production Saturday list did not produce its next three departures ({weekend.State}: {weekendNumbers})");
+
+    var sunday = LocalTrainScheduleService.GetUpcoming(
+        schedule,
+        new DateTimeOffset(2026, 11, 22, 6, 0, 0, TimeSpan.Zero));
+    var sundayNumbers = string.Join(", ", sunday.Upcoming.Select(train => train.TrainNumber));
+    Require(sunday.State == TrainScheduleState.PartiallyAvailable &&
+        sunday.Upcoming.Select(train => train.TrainNumber).SequenceEqual(["6520", "6404", "6318"]),
+        $"the production Sunday list did not produce its next three departures ({sunday.State}: {sundayNumbers})");
+}
+
+string CreateScheduleFixture(
+    string weekdayRows,
+    string weekendRows,
+    string dataStatus = "VERIFIED",
+    string effectiveFrom = "2026-01-01",
+    string effectiveThrough = "2027-12-31",
+    string dataNote = "") =>
+    $"# NOVA LOCAL SCHEDULE\n" +
+    $"# FORMAT_VERSION: 1\n" +
+    $"# ROUTE: TSARSKOE_SELO -> KUPCHINO\n" +
+    $"# TIMEZONE: Europe/Moscow\n" +
+    $"# DATA_STATUS: {dataStatus}\n" +
+    $"# EFFECTIVE_FROM: {effectiveFrom}\n" +
+    $"# EFFECTIVE_THROUGH: {effectiveThrough}\n" +
+    $"# DATA_NOTE: {dataNote}\n" +
+    $"[WEEKDAYS]\n{weekdayRows}\n" +
+    $"[WEEKENDS]\n{weekendRows}\n";
+
 void TestYandexLrcParser()
 {
     var timed = YandexMusicLyricsService.ParseLrc(
@@ -120,6 +319,42 @@ void TestYandexLrcParser()
     var plain = YandexMusicLyricsService.ParseLrc("[ar:Artist]\nFirst plain line\nSecond plain line");
     Require(plain.Lines.Count == 0 && plain.PlainText == $"First plain line{Environment.NewLine}Second plain line",
         "untimed lyrics were not retained as plain text");
+
+    var empty = YandexMusicLyricsService.ParseLrc("");
+    Require(empty.Lines.Count == 0 && empty.PlainText.Length == 0,
+        "an empty LRC response was not represented as an absent lyric");
+}
+
+void TestYandexLyricsFailureClassification()
+{
+    Require(
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.Unauthorized, YandexLyricsRequestStage.Search) ==
+            YandexLyricsFailureKind.Authorization &&
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.Forbidden, YandexLyricsRequestStage.Download) ==
+            YandexLyricsFailureKind.Authorization,
+        "authorization responses did not map to the authorization state");
+    Require(
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.NotFound, YandexLyricsRequestStage.Search) ==
+            YandexLyricsFailureKind.TrackNotMatched &&
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.NotFound, YandexLyricsRequestStage.Lyrics) ==
+            YandexLyricsFailureKind.NoLyrics &&
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.NotFound, YandexLyricsRequestStage.Download) ==
+            YandexLyricsFailureKind.Api,
+        "404 responses were not distinguished by request stage");
+    Require(
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.TooManyRequests, YandexLyricsRequestStage.Lyrics) ==
+            YandexLyricsFailureKind.Api &&
+        YandexMusicLyricsService.ClassifyHttpFailure(HttpStatusCode.ServiceUnavailable, YandexLyricsRequestStage.Download) ==
+            YandexLyricsFailureKind.Api &&
+        YandexMusicLyricsService.ClassifyHttpFailure((HttpStatusCode?)null, YandexLyricsRequestStage.Lyrics) ==
+            YandexLyricsFailureKind.Network,
+        "API and network failures were not kept distinct from missing lyrics");
+    Require(
+        YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.Authorization).Contains("авторизации", StringComparison.OrdinalIgnoreCase) &&
+        YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.TrackNotMatched).Contains("не сопоставлен", StringComparison.OrdinalIgnoreCase) &&
+        YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.NoLyrics).Contains("не найден", StringComparison.OrdinalIgnoreCase) &&
+        YandexMusicLyricsService.GetUserFacingFailure(YandexLyricsFailureKind.Network).Contains("сети", StringComparison.OrdinalIgnoreCase),
+        "failure categories did not produce concrete user-facing explanations");
 }
 
 void TestSystemMasterVolume()

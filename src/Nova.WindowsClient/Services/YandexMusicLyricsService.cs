@@ -14,6 +14,33 @@ internal sealed record TimedLyricLine(TimeSpan Position, string Text);
 
 internal sealed record YandexLyricsDocument(IReadOnlyList<TimedLyricLine> Lines, string PlainText);
 
+internal enum YandexLyricsFailureKind
+{
+    Authorization,
+    TrackNotMatched,
+    NoLyrics,
+    Network,
+    Api,
+    InvalidResponse
+}
+
+internal enum YandexLyricsRequestStage
+{
+    Search,
+    Lyrics,
+    Download
+}
+
+internal sealed class YandexLyricsException(
+    YandexLyricsFailureKind kind,
+    string message,
+    HttpStatusCode? statusCode = null,
+    Exception? innerException = null) : Exception(message, innerException)
+{
+    public YandexLyricsFailureKind Kind { get; } = kind;
+    public HttpStatusCode? StatusCode { get; } = statusCode;
+}
+
 internal sealed class YandexMusicLyricsService
 {
     private const string ApiBaseUrl = "https://api.music.yandex.net";
@@ -41,12 +68,90 @@ internal sealed class YandexMusicLyricsService
         var token = NormalizeToken(oauthToken);
         if (token.Length > 4096)
             throw new ArgumentException("OAuth-токен слишком длинный.", nameof(oauthToken));
-        var trackId = await FindExactTrackAsync(title, artist, token, cancellationToken);
-        return await DownloadLyricsAsync(trackId, token, cancellationToken);
+        try
+        {
+            var trackId = await FindExactTrackAsync(title, artist, token, cancellationToken);
+            var lyrics = await DownloadLyricsAsync(trackId, token, cancellationToken);
+            if (lyrics.Lines.Count == 0 && string.IsNullOrWhiteSpace(lyrics.PlainText))
+                throw new YandexLyricsException(YandexLyricsFailureKind.NoLyrics, "Текст не найден.");
+            return lyrics;
+        }
+        catch (YandexLyricsException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateHttpFailure(ex.StatusCode, YandexLyricsRequestStage.Lyrics, ex);
+        }
+        catch (JsonException ex)
+        {
+            throw new YandexLyricsException(YandexLyricsFailureKind.InvalidResponse, "Ответ Яндекс Музыки не является корректным JSON.", innerException: ex);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new YandexLyricsException(YandexLyricsFailureKind.InvalidResponse, ex.Message, innerException: ex);
+        }
+        catch (IOException ex)
+        {
+            throw new YandexLyricsException(YandexLyricsFailureKind.Network, "Ошибка чтения ответа Яндекс Музыки.", innerException: ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new YandexLyricsException(YandexLyricsFailureKind.InvalidResponse, "Структура ответа Яндекс Музыки не распознана.", innerException: ex);
+        }
     }
+
+    internal static YandexLyricsFailureKind ClassifyHttpFailure(HttpStatusCode statusCode, YandexLyricsRequestStage stage)
+    {
+        if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return YandexLyricsFailureKind.Authorization;
+        if (statusCode == HttpStatusCode.NotFound)
+            return stage switch
+            {
+                YandexLyricsRequestStage.Search => YandexLyricsFailureKind.TrackNotMatched,
+                YandexLyricsRequestStage.Lyrics => YandexLyricsFailureKind.NoLyrics,
+                _ => YandexLyricsFailureKind.Api
+            };
+        return YandexLyricsFailureKind.Api;
+    }
+
+    internal static YandexLyricsFailureKind ClassifyHttpFailure(HttpStatusCode? statusCode, YandexLyricsRequestStage stage) =>
+        statusCode is { } status
+            ? ClassifyHttpFailure(status, stage)
+            : YandexLyricsFailureKind.Network;
+
+    internal static string GetUserFacingFailure(YandexLyricsFailureKind kind, HttpStatusCode? statusCode = null) =>
+        kind switch
+        {
+            YandexLyricsFailureKind.Authorization =>
+                "Ошибка авторизации: Яндекс Музыка отклонила токен или запретила доступ к тексту. Проверьте токен и права.",
+            YandexLyricsFailureKind.TrackNotMatched =>
+                "Трек не сопоставлен: точное название и исполнитель не найдены в Яндекс Музыке.",
+            YandexLyricsFailureKind.NoLyrics =>
+                "Текст не найден: для этого трека нет доступного текста в Яндекс Музыке.",
+            YandexLyricsFailureKind.Network =>
+                "Ошибка сети при подключении к Яндекс Музыке. Проверьте подключение и повторите попытку.",
+            YandexLyricsFailureKind.Api when statusCode == HttpStatusCode.TooManyRequests =>
+                "Ошибка API Яндекс Музыки: слишком много запросов. Попробуйте позже.",
+            YandexLyricsFailureKind.Api when statusCode is { } status && (int)status >= 500 =>
+                $"Ошибка API Яндекс Музыки (HTTP {(int)status}). Попробуйте позже.",
+            YandexLyricsFailureKind.Api when statusCode is { } status =>
+                $"Ошибка API Яндекс Музыки (HTTP {(int)status}).",
+            YandexLyricsFailureKind.Api =>
+                "Ошибка API Яндекс Музыки. Повторите попытку позже.",
+            YandexLyricsFailureKind.InvalidResponse =>
+                "Ошибка ответа Яндекс Музыки: полученные данные не удалось распознать.",
+            _ => "Не удалось загрузить текст песни."
+        };
 
     internal static YandexLyricsDocument ParseLrc(string content)
     {
+        content = content.TrimStart('\uFEFF');
         var timedLines = new List<(TimedLyricLine Line, int Order)>();
         var plainLines = new List<string>();
         var order = 0;
@@ -102,14 +207,15 @@ internal sealed class YandexMusicLyricsService
             $"{ApiBaseUrl}/search?text={query}&type=track&page=0&nocorrect=false",
             token);
         using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (response.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedAccessException("Яндекс Музыка отклонила OAuth-токен. Проверьте его и повторите попытку.");
-        response.EnsureSuccessStatusCode();
+        EnsureSuccessfulResponse(response, YandexLyricsRequestStage.Search);
 
         var json = await ReadBoundedContentAsync(response.Content, MaximumApiResponseBytes, cancellationToken);
         using var document = JsonDocument.Parse(json);
-        if (!document.RootElement.TryGetProperty("result", out var result) ||
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("result", out var result) ||
+            result.ValueKind != JsonValueKind.Object ||
             !result.TryGetProperty("tracks", out var tracks) ||
+            tracks.ValueKind != JsonValueKind.Object ||
             !tracks.TryGetProperty("results", out var results) ||
             results.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Ответ поиска Яндекс Музыки не содержит список треков.");
@@ -143,7 +249,8 @@ internal sealed class YandexMusicLyricsService
                 return id;
         }
 
-        throw new KeyNotFoundException("В Яндекс Музыке не найдено точное совпадение названия и исполнителя.");
+        throw new YandexLyricsException(YandexLyricsFailureKind.TrackNotMatched,
+            "В Яндекс Музыке не найдено точное совпадение названия и исполнителя.");
     }
 
     private static async Task<YandexLyricsDocument> DownloadLyricsAsync(
@@ -161,18 +268,18 @@ internal sealed class YandexMusicLyricsService
         var lyricsUri = $"{ApiBaseUrl}/tracks/{escapedTrackId}/lyrics?format=LRC&timeStamp={timestamp}&sign={Uri.EscapeDataString(sign)}";
         using var request = CreateAuthenticatedRequest(HttpMethod.Get, lyricsUri, token);
         using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (response.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedAccessException("Яндекс Музыка не разрешила доступ к тексту. Проверьте OAuth-токен.");
-        if (response.StatusCode == HttpStatusCode.NotFound)
-            throw new KeyNotFoundException("Для этого трека в Яндекс Музыке нет доступного текста.");
-        response.EnsureSuccessStatusCode();
+        EnsureSuccessfulResponse(response, YandexLyricsRequestStage.Lyrics);
 
         var json = await ReadBoundedContentAsync(response.Content, MaximumApiResponseBytes, cancellationToken);
         using var document = JsonDocument.Parse(json);
-        if (!document.RootElement.TryGetProperty("result", out var result) ||
-            !result.TryGetProperty("downloadUrl", out var downloadUrlElement) ||
-            downloadUrlElement.ValueKind != JsonValueKind.String)
-            throw new InvalidDataException("Яндекс Музыка не вернула ссылку для скачивания текста.");
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("result", out var result) ||
+            result.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Ответ Яндекс Музыки не содержит корректные данные текста.");
+        if (!result.TryGetProperty("downloadUrl", out var downloadUrlElement) ||
+            downloadUrlElement.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(downloadUrlElement.GetString()))
+            throw new YandexLyricsException(YandexLyricsFailureKind.NoLyrics, "Яндекс Музыка не предоставила текст для этого трека.");
 
         var downloadUrl = downloadUrlElement.GetString();
         if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var downloadUri) ||
@@ -186,9 +293,29 @@ internal sealed class YandexMusicLyricsService
             downloadUri,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
-        lyricsResponse.EnsureSuccessStatusCode();
+        EnsureSuccessfulResponse(lyricsResponse, YandexLyricsRequestStage.Download);
         var lyricsBytes = await ReadBoundedContentAsync(lyricsResponse.Content, MaximumApiResponseBytes, cancellationToken);
         return ParseLrc(Encoding.UTF8.GetString(lyricsBytes));
+    }
+
+    private static void EnsureSuccessfulResponse(HttpResponseMessage response, YandexLyricsRequestStage stage)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        throw CreateHttpFailure(response.StatusCode, stage);
+    }
+
+    private static YandexLyricsException CreateHttpFailure(
+        HttpStatusCode? statusCode,
+        YandexLyricsRequestStage stage,
+        Exception? innerException = null)
+    {
+        var kind = ClassifyHttpFailure(statusCode, stage);
+        return new YandexLyricsException(kind,
+            GetUserFacingFailure(kind, statusCode),
+            statusCode,
+            innerException);
     }
 
     private static HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, string uri, string token)
