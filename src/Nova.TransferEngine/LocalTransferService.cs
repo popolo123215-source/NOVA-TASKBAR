@@ -506,7 +506,8 @@ public sealed class LocalTransferService : IAsyncDisposable
                 throw new InvalidDataException("Контрольная сумма файла не совпала.");
             finalPath = MoveWithoutOverwrite(temporary, Settings.DestinationDirectory, offer.FileName);
             await FramedJson.WriteAsync(ssl, WireEnvelope.Create("complete", new WireReply(true)), cancellationToken);
-            ProgressChanged?.Invoke(new LocalTransferProgress(offer.TransferId, offer.FileName, TransferState.Completed, offer.SizeBytes, offer.SizeBytes));
+            ProgressChanged?.Invoke(new LocalTransferProgress(offer.TransferId, offer.FileName, TransferState.Completed,
+                offer.SizeBytes, offer.SizeBytes, finalPath));
             AddHistory(new TransferHistoryEntry(offer.TransferId, TransferDirection.Incoming, peer.Device.DisplayName,
                 Path.GetFileName(finalPath), offer.SizeBytes, DateTimeOffset.UtcNow, TransferState.Completed));
         }

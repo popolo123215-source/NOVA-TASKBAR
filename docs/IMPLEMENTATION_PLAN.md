@@ -592,3 +592,11 @@ Research references:
 - Published a self-contained x64 build in `build/NOVA-Taskbar-Release-v7/publish/` and verified the 490-entry archive `build/NOVA-Taskbar-v6.0.1-win-x64.zip` contains the EXE, managed DLL, native WebRTC DLL, and runtime config. Archive SHA-256: `418EE543CDCC0FD261EBB80360ABE55E573A29FCD355093667DA267F36C49E0F`.
 - Updated and read back the desktop shortcut to target the v7 publish directory.
 - **GUI verification of the new NOVA1 row: NOT VERIFIED.** The already-running v6 instance was left open to avoid interrupting the user's current session or losing an entered pairing code. Restart NOVA using the updated shortcut to use the fixed layout.
+
+## Received-file location visibility (2026-11-17)
+
+- Investigated a report that transfers completed but the received-files folder looked empty. The running machine's persisted destination is `Documents/NOVA/Полученные файлы`, not a top-level `Documents/Полученные файлы` folder. Its transfer history showed a completed incoming transfer and the corresponding file was present in that configured directory.
+- Added an **Открыть** action beside the destination path so the user can open NOVA's actual configured receive folder rather than guessing which similarly named folder is correct. The full destination path is also available as the path label's tooltip.
+- Successful incoming LAN/Direct VPN and WebRTC/relay completion progress now carries the final saved path. NOVA displays that path after the file has been flushed, hash-verified and moved into its final unique filename; sender-side completion does not claim a local save path.
+- Release build passed with 0 warnings and 0 errors. Transfer integration tests passed **22/22**, including exact saved-path assertions for LAN, Direct VPN, WebRTC and TCP/TLS relay. Windows-client tests passed **15/15**. `git diff --check` passed.
+- **Visual verification of the new folder button: NOT VERIFIED** because the user’s already-running instance is an older build; it was not closed during this task.

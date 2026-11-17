@@ -359,7 +359,10 @@
                 <Grid Margin="0,0,0,5">
                   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <TextBlock x:Name="DestinationPathText" Foreground="{StaticResource MutedInk}" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                  <Button Grid.Column="1" Style="{StaticResource SmallButton}" Content="Папка…" Click="ChooseDestination_Click" Margin="6,0,0,0" Padding="7,5"/>
+                  <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{StaticResource SmallButton}" Content="Открыть" Click="OpenDestination_Click" ToolTip="Открыть именно эту папку с полученными файлами" Margin="4,0,0,0" Padding="7,5"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Папка…" Click="ChooseDestination_Click" Margin="4,0,0,0" Padding="7,5"/>
+                  </StackPanel>
                 </Grid>
               </StackPanel>
             </ScrollViewer>

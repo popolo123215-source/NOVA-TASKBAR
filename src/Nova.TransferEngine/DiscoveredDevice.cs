@@ -26,4 +26,5 @@ public sealed record DiscoveredDevice(string DeviceId, string DisplayName, IPAdd
 
 internal sealed record DeviceAnnouncement(int Version, string DeviceId, string DisplayName, int Port, string Fingerprint, DateTimeOffset SentAt);
 
-public sealed record LocalTransferProgress(string TransferId, string FileName, TransferState State, long BytesTransferred, long TotalBytes);
+public sealed record LocalTransferProgress(string TransferId, string FileName, TransferState State, long BytesTransferred, long TotalBytes,
+    string? SavedPath = null);

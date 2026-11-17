@@ -25,7 +25,8 @@ public sealed record WebRtcSessionProgress(
     int IceServerCount = 0,
     bool TurnConfigured = false,
     double BytesPerSecond = 0,
-    bool IntegrityVerified = false);
+    bool IntegrityVerified = false,
+    string? SavedPath = null);
 public sealed class WebRtcTransferRejectedException(string fileName) : IOException($"The receiver rejected '{fileName}'.");
 internal sealed class WebRtcRouteUnavailableException(string message, Exception? inner = null) : IOException(message, inner);
 internal sealed class TransferRemoteFailureException(string message) : IOException(message);
@@ -422,7 +423,7 @@ public sealed class WebRtcTransferCoordinator : IAsyncDisposable
                 await SendWebRtcControlAsync(session, TransferControlType.BlockAcknowledgement, offer.TransferId, ack, ct).ConfigureAwait(false);
             }, new Progress<long>(bytes => Report(session, WebRtcTransferSessionState.Transferring, bytes)),
             cancellationToken: session.Token);
-        _ = await WaitForWebRtcAsync(receive, session, null).ConfigureAwait(false);
+        session.SavedPath = await WaitForWebRtcAsync(receive, session, null).ConfigureAwait(false);
         session.IntegrityVerified = true;
         Report(session, WebRtcTransferSessionState.Verifying, offer.SizeBytes);
         await SendWebRtcControlAsync(session, TransferControlType.Complete, offer.TransferId,
@@ -444,7 +445,7 @@ public sealed class WebRtcTransferCoordinator : IAsyncDisposable
                 new TransferBlockAcknowledgementPayload(offset), ct),
             new Progress<long>(bytes => Report(session, WebRtcTransferSessionState.Transferring, bytes)),
             cancellationToken: session.Token);
-        _ = await received.ConfigureAwait(false);
+        session.SavedPath = await received.ConfigureAwait(false);
         session.IntegrityVerified = true;
         Report(session, WebRtcTransferSessionState.Verifying, offer.SizeBytes);
         await connection.SendControlAsync(TransferControlType.Complete, new TransferCompletePayload(offer.Sha256),
@@ -693,7 +694,7 @@ public sealed class WebRtcTransferCoordinator : IAsyncDisposable
         ProgressChanged?.Invoke(new WebRtcSessionProgress(session.Id, session.Offer?.FileName ?? "", state, bytes,
             session.Offer?.SizeBytes ?? 0, error, session.ConnectionPath, session.PeerConnectionState, session.IceState,
             session.DataChannelState, session.LocalIceCandidates, session.RemoteIceCandidates, session.IceServerCount,
-            session.TurnConfigured, session.BytesPerSecond, session.IntegrityVerified));
+            session.TurnConfigured, session.BytesPerSecond, session.IntegrityVerified, session.SavedPath));
     }
 
     private static void SetIceServerDiagnostics(Session session, IReadOnlyList<string> iceServers)
@@ -805,6 +806,7 @@ public sealed class WebRtcTransferCoordinator : IAsyncDisposable
         public long LastRateBytes;
         public DateTimeOffset? LastRateAt;
         public bool IntegrityVerified;
+        public string? SavedPath;
         public TaskCompletionSource<bool> Acceptance { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ChannelOpen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

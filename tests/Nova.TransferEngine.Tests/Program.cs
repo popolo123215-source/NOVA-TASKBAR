@@ -397,6 +397,7 @@ static async Task TestTcpTlsFileRelayAsync()
             128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(receivedFile, transferTimeout.Token));
         Assert(receivedInfo.Length == fileLength, "TCP/TLS relay output size differs from the source file.");
+        Assert(received.SavedPath == receivedPath, "TCP/TLS relay receiver completion did not report the final saved path.");
         Assert(actualHash == expectedHash && sent.IntegrityVerified && received.IntegrityVerified,
             "TCP/TLS relay did not confirm the receiver's SHA-256.");
         Assert(sent.ConnectionPath == "TCP/TLS File Relay" && received.ConnectionPath == "TCP/TLS File Relay",
@@ -492,6 +493,7 @@ static async Task TestWebRtcCoordinatorAsync()
     await File.WriteAllBytesAsync(source, contents);
     var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var receiverCompleted = new TaskCompletionSource<WebRtcSessionProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
     var diagnostics = new TaskCompletionSource<WebRtcSessionProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
     var rejected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var cancelRequest = new TaskCompletionSource<WebRtcIncomingOfferRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -521,6 +523,8 @@ static async Task TestWebRtcCoordinatorAsync()
     };
     b.WebRtcProgressChanged += progress =>
     {
+        if (progress.FileName == "coordinator-payload.bin" && progress.State == WebRtcTransferSessionState.Completed)
+            receiverCompleted.TrySetResult(progress);
         if (progress.State == WebRtcTransferSessionState.Cancelled && progress.FileName == "cancel.bin") cancelledAtReceiver.TrySetResult();
         if (progress.State == WebRtcTransferSessionState.Cancelled && progress.FileName == "cancel-from-receiver.bin") receiverCancellationAtReceiver.TrySetResult();
     };
@@ -537,6 +541,8 @@ static async Task TestWebRtcCoordinatorAsync()
         "WebRTC progress did not report the actual ICE, candidate, DataChannel, and configured-server state.");
     var finalPath = Path.Combine(destination, "coordinator-payload.bin");
     Assert(File.Exists(finalPath), "Accepted WebRTC transfer did not produce a final file.");
+    Assert((await receiverCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), timeout.Token)).SavedPath == finalPath,
+        "WebRTC receiver completion did not report the final saved path.");
     var actual = await File.ReadAllBytesAsync(finalPath, timeout.Token);
     Assert(actual.AsSpan().SequenceEqual(contents), "Coordinator transfer output differs from the source payload.");
     Assert(Convert.ToHexString(SHA256.HashData(actual)) == Convert.ToHexString(SHA256.HashData(contents)), "Coordinator transfer SHA-256 differs.");
@@ -750,6 +756,11 @@ static async Task TestEndToEndAsync()
     using var identityB = DeviceIdentity.CreateEphemeral("Компьютер B");
     await using var a = new LocalTransferService(aRoot, identity: identityA);
     await using var b = new LocalTransferService(bRoot, destinationDirectory: destination, identity: identityB);
+    LocalTransferProgress? incomingCompletion = null;
+    b.ProgressChanged += progress =>
+    {
+        if (progress.State == TransferState.Completed) incomingCompletion = progress;
+    };
     a.TrustedPeers.Trust(new DiscoveredDevice(identityB.Device.DeviceId, identityB.Device.DisplayName, IPAddress.Loopback, 1, identityB.Fingerprint, DateTimeOffset.UtcNow, false));
     b.TrustedPeers.Trust(new DiscoveredDevice(identityA.Device.DeviceId, identityA.Device.DisplayName, IPAddress.Loopback, 1, identityA.Fingerprint, DateTimeOffset.UtcNow, false));
     var acceptNext = true;
@@ -761,6 +772,7 @@ static async Task TestEndToEndAsync()
 
     var received = Path.Combine(destination, "large.bin");
     Assert(File.Exists(received), "Файл не сохранён.");
+    Assert(incomingCompletion?.SavedPath == received, "Receiver completion did not report the final saved path.");
     byte[] sourceDigest;
     byte[] receivedDigest;
     await using (var sourceStream = File.OpenRead(sourceFile)) sourceDigest = await SHA256.HashDataAsync(sourceStream);
@@ -839,6 +851,11 @@ static async Task TestDirectVpnAsync()
         using var identityB = DeviceIdentity.CreateEphemeral("Direct VPN Receiver");
         await using var a = new LocalTransferService(Path.Combine(root, "device-a"), identity: identityA);
         await using var b = new LocalTransferService(Path.Combine(root, "device-b"), destinationDirectory: destination, identity: identityB);
+        string? directVpnSavedPath = null;
+        b.ProgressChanged += progress =>
+        {
+            if (progress.State == TransferState.Completed) directVpnSavedPath = progress.SavedPath;
+        };
         var deviceA = new DiscoveredDevice(identityA.Device.DeviceId, identityA.Device.DisplayName, IPAddress.None, 0,
             identityA.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.None, false);
         var deviceB = new DiscoveredDevice(identityB.Device.DeviceId, identityB.Device.DisplayName, IPAddress.None, 0,
@@ -875,6 +892,7 @@ static async Task TestDirectVpnAsync()
 
         var receivedPath = Path.Combine(destination, "direct-vpn.bin");
         Assert(File.Exists(receivedPath), "Direct VPN did not save the received file.");
+        Assert(directVpnSavedPath == receivedPath, "Direct VPN completion did not report the final saved path.");
         await using var receivedFile = new FileStream(receivedPath, FileMode.Open, FileAccess.Read, FileShare.Read,
             128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(receivedFile, timeout.Token));

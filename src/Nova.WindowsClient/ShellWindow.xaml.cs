@@ -205,6 +205,24 @@ public partial class ShellWindow : Window
         }
     }
 
+    private void OpenDestination_Click(object sender, RoutedEventArgs e)
+    {
+        var destination = _transferService.Settings.DestinationDirectory;
+        try
+        {
+            Directory.CreateDirectory(destination);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = destination,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            TransferStatusText.Text = $"Не удалось открыть папку «{destination}»: {ex.Message}";
+        }
+    }
+
     private void RefreshObsInstallationStatus()
     {
         try
@@ -561,6 +579,7 @@ public partial class ShellWindow : Window
         LocalPairingCodeBox.Text = CreatePairingCode(_transferService.Identity.Device.DeviceId,
             _transferService.Identity.Device.DisplayName, _transferService.Identity.Fingerprint);
         DestinationPathText.Text = _transferService.Settings.DestinationDirectory;
+        DestinationPathText.ToolTip = _transferService.Settings.DestinationDirectory;
         InitializeOcrLanguages();
         RefreshObsInstallationStatus();
         DirectVpnPortText.Text = _transferService.TcpPort > 0
@@ -1304,6 +1323,7 @@ public partial class ShellWindow : Window
         {
             _transferService.SetDestinationDirectory(dialog.SelectedPath);
             DestinationPathText.Text = _transferService.Settings.DestinationDirectory;
+            DestinationPathText.ToolTip = _transferService.Settings.DestinationDirectory;
             TransferStatusText.Text = "Папка получения сохранена.";
         }
         catch
@@ -1412,6 +1432,8 @@ public partial class ShellWindow : Window
                 if (_activities.Count > 30) _activities.RemoveAt(_activities.Count - 1);
             }
             activity.Update(progress);
+            if (progress.SavedPath is not null)
+                TransferStatusText.Text = $"Файл сохранён: {progress.SavedPath}";
             if (progress.State == TransferState.Offered)
             {
                 var file = _outgoingFiles.FirstOrDefault(x => x.Status == "В очереди" && string.Equals(x.Name, progress.FileName, StringComparison.OrdinalIgnoreCase));
@@ -1434,6 +1456,8 @@ public partial class ShellWindow : Window
                 if (_activities.Count > 30) _activities.RemoveAt(_activities.Count - 1);
             }
             activity.Update(progress);
+            if (progress.SavedPath is not null)
+                TransferStatusText.Text = $"Файл сохранён: {progress.SavedPath}";
             if (!_webRtcFileByTransferId.TryGetValue(progress.TransferId, out var fileRow))
             {
                 fileRow = _outgoingFiles.FirstOrDefault(x => x.Status == "WebRTC: ожидание" &&
