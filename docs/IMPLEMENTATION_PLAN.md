@@ -584,3 +584,11 @@ Research references:
 - Launched the published v6 EXE after the fix. Its process remained responsive, and Windows UI Automation observed the visible `Панель NOVA` capsule window — **RUNTIME VERIFIED** and **GUI VERIFIED** for startup.
 - Updated the desktop shortcut to v6. The app is currently running from `build/NOVA-Taskbar-Release-v6/publish/`.
 - The README now distinguishes the source-code ZIP from the runnable GitHub Release archive. Users should download the release ZIP, extract all files together, and run `Nova.TaskBar.exe`; downloading only the EXE will not work because adjacent runtime and native files are required.
+
+## NOVA1 trust-code button layout fix (2026-11-17)
+
+- Fixed the trust-code row layout. The long single-line NOVA1 textbox previously preceded a right-docked button in a `DockPanel`; as the pasted code grew, its desired width could push the action button beyond the visible column. The pairing-code input, local-code copy action, and destination-folder row now use a star-width content column plus an auto-width action column. The input also scrolls horizontally instead of expanding.
+- Release build succeeded with 0 warnings and 0 errors; Windows client tests passed **15/15**.
+- Published a self-contained x64 build in `build/NOVA-Taskbar-Release-v7/publish/` and verified the 490-entry archive `build/NOVA-Taskbar-v6.0.1-win-x64.zip` contains the EXE, managed DLL, native WebRTC DLL, and runtime config. Archive SHA-256: `418EE543CDCC0FD261EBB80360ABE55E573A29FCD355093667DA267F36C49E0F`.
+- Updated and read back the desktop shortcut to target the v7 publish directory.
+- **GUI verification of the new NOVA1 row: NOT VERIFIED.** The already-running v6 instance was left open to avoid interrupting the user's current session or losing an entered pairing code. Restart NOVA using the updated shortcut to use the fixed layout.

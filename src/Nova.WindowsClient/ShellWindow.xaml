@@ -344,11 +344,23 @@
                 <TextBlock Text="Мой код безопасности" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,6,0,2"/>
                 <TextBox x:Name="LocalFingerprintText" IsReadOnly="True" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4" FontSize="9" HorizontalScrollBarVisibility="Auto"/>
                 <TextBlock Text="Код устройства NOVA1" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,5,0,2"/>
-                <DockPanel Margin="0,0,0,5"><TextBox x:Name="LocalPairingCodeBox" IsReadOnly="True" HorizontalScrollBarVisibility="Auto" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4" FontSize="8"/><Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Копировать" Click="CopyPairingCode_Click" Margin="5,0,0,0" Padding="7,5"/></DockPanel>
-                <DockPanel Margin="0,0,0,5"><TextBox x:Name="PairingCodeBox" ToolTip="Вставьте код NOVA1: от второго устройства" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4" FontSize="8"/><Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Доверить" Click="TrustInternetCode_Click" Margin="5,0,0,0" Padding="7,5"/></DockPanel>
+                <Grid Margin="0,0,0,5">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBox x:Name="LocalPairingCodeBox" IsReadOnly="True" HorizontalScrollBarVisibility="Auto" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4" FontSize="8"/>
+                  <Button Grid.Column="1" Style="{StaticResource SmallButton}" Content="Копировать" Click="CopyPairingCode_Click" Margin="5,0,0,0" Padding="7,5"/>
+                </Grid>
+                <Grid Margin="0,0,0,5">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBox x:Name="PairingCodeBox" ToolTip="Вставьте код NOVA1: от второго устройства" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4" FontSize="8"/>
+                  <Button Grid.Column="1" Style="{StaticResource SmallButton}" Content="Доверить" Click="TrustInternetCode_Click" Margin="5,0,0,0" Padding="7,5"/>
+                </Grid>
                 <WrapPanel Margin="0,0,0,5"><Button Style="{StaticResource SmallButton}" Content="Подтвердить выбранное" Click="TrustDevice_Click" Margin="0,0,5,0" Padding="7,5"/><Button Style="{StaticResource SmallButton}" Content="Файлы…" Click="ChooseFiles_Click" Padding="7,5"/></WrapPanel>
                 <TextBlock Text="Получение" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,2,0,2"/>
-                <DockPanel Margin="0,0,0,5"><TextBlock x:Name="DestinationPathText" Foreground="{StaticResource MutedInk}" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Папка…" Click="ChooseDestination_Click" Margin="6,0,0,0" Padding="7,5"/></DockPanel>
+                <Grid Margin="0,0,0,5">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="DestinationPathText" Foreground="{StaticResource MutedInk}" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                  <Button Grid.Column="1" Style="{StaticResource SmallButton}" Content="Папка…" Click="ChooseDestination_Click" Margin="6,0,0,0" Padding="7,5"/>
+                </Grid>
               </StackPanel>
             </ScrollViewer>
             <ScrollViewer Grid.Row="0" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="8,0,0,0">
