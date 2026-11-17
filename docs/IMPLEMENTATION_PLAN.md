@@ -1,6 +1,7 @@
 # NOVA TaskBar implementation plan
 
-**Updated:** 2026-11-14  
+**Updated:** 2026-11-15
+
 **Milestone:** Internet Mode implementation (public deployment and cross-network acceptance pending)
 
 > This document retains dated milestone snapshots for project history. Historical toolchain and blocker notes apply to those dated entries; the current verified state and active Critical Path are in the latest section at the end.
@@ -277,8 +278,299 @@ The script checks out pinned vcpkg, bootstraps its executable inside `build/tool
 - The native DLL currently exists only in prior Windows-client Release/publish output; `build/native-x64/Release/nova_webrtc.dll` is absent, so tests built from the current tree cannot load the native transport. The managed test harness’s prior complete exception was not persisted anywhere in the repository. The retained result identifies the concrete load failure as `DllNotFoundException` for `nova_webrtc`; the coordinator’s timeout was a secondary symptom of that missing DLL, not evidence of a WebRTC negotiation defect.
 - **NOT VERIFIED:** rerunning vcpkg, native CMake, managed builds and harness is blocked in this session before process launch by the managed Windows sandbox. The script fix was statically checked, but has not been represented as a successful native build.
 
-#### Current Critical Path
+#### Critical Path at this checkpoint
 
 1. Run `./scripts/build-native.ps1`; confirm the manifest completes without any repository path in vcpkg’s tool/download/build logs.
 2. Verify `build/native-x64/Release/nova_webrtc.dll` architecture and exports, then build the Windows client and execute the full harness from a clean output folder.
 3. Treat native coordinator and lifecycle results as valid only after the rebuilt DLL is copied beside the harness executable; then continue deployed WSS/direct-ICE/TURN acceptance tests.
+
+### Post-baseline stabilization — current verified state
+
+This section supersedes earlier NOT VERIFIED notes where the same build, test, or runtime checks are now recorded as passed.
+
+#### Native build
+
+- `scripts/build-native.ps1` completed successfully for Windows x64 after correcting the Release `libffi` selection in `CMakeLists.txt`. Release now links the configuration-specific `lib/ffi.lib`, rather than the Debug `debug/lib/ffi.lib`.
+- The prior `LNK4098` cause was the Debug archive's `/DEFAULTLIB:LIBCMTD` directive entering the Release link alongside Release dependencies using `LIBCMT`. The post-fix native build completed without `LNK4098`; no CRT warning suppression or forced runtime override was added.
+- `build/native-x64/Release/nova_webrtc.dll` was verified as x64 PE32+. `dumpbin /exports` reports 12 exports: `nova_peer_add_candidate`, `nova_peer_close`, `nova_peer_close_channel`, `nova_peer_create`, `nova_peer_create_answer`, `nova_peer_create_channel`, `nova_peer_create_ex`, `nova_peer_create_offer`, `nova_peer_get_selected_candidate_pair`, `nova_peer_send`, `nova_peer_set_remote_description`, and `nova_webrtc_abi_version`.
+- Third-party usrsctp warnings remain: C4319 ×3 and C4703 ×2. They were not disabled or patched as part of this stabilization.
+
+#### Managed builds, tests, and publish
+
+- Windows client and test harness Debug and Release builds completed with 0 errors and 0 warnings.
+- `Nova.TransferEngine.Tests` passed **18/18** in Debug and **18/18** in Release, including the native-backed scenarios.
+- `dotnet publish src/Nova.WindowsClient/Nova.WindowsClient.csproj -c Release --no-restore` completed successfully. The publish output contains `nova_webrtc.dll`.
+
+#### WPF runtime
+
+- The Debug build and Release publish both launched and displayed the expected `Панель NOVA` window.
+- The window's hide control removed the window while the corresponding process remained running with no main-window handle, consistent with the tray-resident lifecycle and `ShutdownMode="OnExplicitShutdown"`.
+- A hidden Debug instance held the named `NOVA.TaskBar.SingleInstance` mutex, so an initial Release launch did not create a second window. After cleaning up that test instance, the Release publish launched normally.
+- The initial Release manual acceptance confirmed that the tray icon appeared and double-clicking it restored the hidden window.
+- The old Release build did not exit after `Завершить NOVA`; PID 29664 remained alive. Code-path analysis identified a UI-dispatcher deadlock: `OnExit` synchronously blocked on `LocalTransferService.DisposeAsync`, while the TCP accept loop had been started on the WPF dispatcher and awaited listener shutdown through that same dispatcher.
+- Shutdown now awaits `LocalTransferService.DisposeAsync` asynchronously from the tray command before calling `Shutdown()`. `OnExit` no longer blocks on async disposal; it releases the tray icon/menu and mutex. `ShellWindow.AllowClose` also stops both dispatcher timers.
+- The fixed Release publish at `build/shutdown-validation/publish/Nova.TaskBar.exe` was manually tested: double-click restore succeeded, the tray-menu exit returned, and a process check confirmed that executable was no longer running.
+- **Repeated launch/exit cycles are NOT VERIFIED:** the manual report did not include a cycle count beyond the single successful shutdown. No forced process termination was used to claim a successful exit; the stale PID from the old build was stopped separately with explicit approval only to release the mutex for testing.
+
+#### Native WebRTC rebuild follow-up
+
+- `scripts/build-native.ps1` completed successfully and produced `build/native-x64/Release/nova_webrtc.dll` (10,022,400 bytes). The DLL is x64 PE32+ and exposes the 12 ABI functions listed above.
+- The rebuilt DLL SHA-256 is `9866ACCA9367ABE80308FD28C886D960609CDFC6B20DEA22411D0E7495FB4EF8`. Its copies in the Windows Client Release output and the test harness Debug and Release outputs matched that hash.
+- The Windows Client Release build and the harness Debug and Release builds completed with 0 errors and 0 warnings.
+- The full harness was run with `--no-build` after the hash checks: **18/18 passed in Debug and 18/18 in Release**, including native WebRTC offer/answer, ICE, bidirectional DataChannel transfer, verified small and large file payloads, and 25 sequential peer lifecycle cycles per run.
+- The negative test for an unknown client certificate logs the expected `AuthenticationException` rejection while the test itself passes. The native build still reports upstream usrsctp C4319 ×3 and C4703 ×2 warnings; no warning suppression was added.
+
+#### Not verified and active Critical Path
+
+1. Perform at least two more sequential launch/restore/exit cycles and confirm no NOVA processes remain after each exit.
+2. Validate the Release publish and packaged native DLL on a clean Windows machine.
+3. Deploy the Internet service with operator-provided DNS/TLS/firewall resources, then test direct and TURN-relayed transfer between independent networks. No deployment or cross-network acceptance is claimed.
+
+### Dynamic Island implementation checkpoint (2026-11-16)
+
+#### Implemented in the Windows client
+
+- Replaced the former panel surface with a single WPF surface containing Compact, Hover and Expanded views. Expanded modules remain within the same window; the default dock edge for new settings is the top edge.
+- Added Windows Media Session access for session metadata, artwork, playback controls and seeking. The compact audio reaction uses the Windows render endpoint's peak meter and fades when playback is inactive; it does not record audio. The media controls and seek bar are anchored in a responsive bottom row. Windows Media Session does not provide lyrics, so unavailable lyrics are shown as such.
+- Added Open-Meteo geocoding with selectable locations and saved coordinates, current weather, a process-local countdown timer and stopwatch, and CPU/GPU/RAM sampling.
+- Added Inci connect/disconnect actions through the vendor-documented `incy://connect` and `incy://disconnect` URI links. The status action opens INCY; its URI handler does not return VPN state, and no machine-readable status/result API or CLI was identified. NOVA does not display a fabricated connection state.
+- Added a transparent, click-through gaming-overlay mode with CPU/GPU/RAM, separate saved size/position, and tray actions for moving or leaving the overlay. Runtime behavior over games, especially exclusive-fullscreen games, remains unverified.
+- Removed the pale/blurred surface styling, added black capsule styling, top docking and free positioning, and constrained panel dimensions to the active display's working area.
+- Saved the display device name with panel preferences so a docked or freely positioned panel can be restored to the same monitor when that display is available. If it is unavailable, the window falls back to the display containing its current position.
+- Preserved the Atoll MIT license and added third-party attribution; no Atoll branding was added to the NOVA UI.
+
+#### Verified
+
+- Windows Client Debug and Release builds passed after the responsive music-layout change: **0 errors, 0 warnings**.
+- The console harness (not a `dotnet test` project) passed **18/18 in Debug and 18/18 in Release**, including native WebRTC transfer and 25 sequential peer lifecycle cycles per run.
+- Open-Meteo geocoding and current-forecast endpoints returned real results for a smoke-query location. The running UI also displayed current weather from Open-Meteo.
+- A self-contained x64 Release publish completed at `build/NOVA-Taskbar-Release-v2/publish/` with 263 files. Its `Nova.TaskBar.exe` and `nova_webrtc.dll` are x64 PE images. The packaged native DLL is 10,022,400 bytes and its SHA-256 matches the current native build; the export table contains the 12 ABI functions documented above.
+- The single desktop shortcut `NOVA Taskbar.lnk` was created/updated and its target and working directory were verified to point to `build/NOVA-Taskbar-Release-v2/publish/Nova.TaskBar.exe`.
+- An earlier self-contained Release instance launched and displayed the compact and expanded WPF surfaces. The final music-layout change was built and published afterward, but its GUI was not opened.
+
+#### Not verified / remaining Critical Path
+
+1. **Final GUI is NOT VERIFIED.** The current single-instance process was being actively used when the final publish was prepared, so it was left running rather than closed. It was launched from the earlier `build/NOVA-Taskbar-Release/publish/` directory; while it holds the mutex, launching the final shortcut can be forwarded to that older process. After that instance exits normally, launch `NOVA Taskbar.lnk` and verify the final `build/NOVA-Taskbar-Release-v2/publish/Nova.TaskBar.exe`.
+2. Verify the final music layout at the saved panel scale: album/metadata, visible previous/play/next controls, and seeking. Test supported media controls against a real playback session.
+3. Verify Compact/Hover/Expanded transitions, click-outside behavior, tray actions, timer controls and shutdown/restart cycles in the final build.
+4. Verify gaming-overlay transparency, input pass-through, movement, telemetry refresh and behavior over windowed/borderless and exclusive-fullscreen games; verify placement/restoration across physical monitors and mixed-DPI displays.
+5. Inci URI commands are implemented, but actual VPN connection/disconnection and authoritative status remain **NOT VERIFIED**. The official status URI only opens INCY and does not report state; do not infer success from launching a URI.
+
+### Direct VPN TCP/TLS file transfer (2026-11-16)
+
+- Added `DirectVpn` to the persisted transport choices. NOVA reuses its existing direct TCP listener and local TLS file protocol; the sender manually supplies the selected trusted contact's numeric IPv4 address and TCP port. Saved trusted contacts remain selectable when LAN multicast and Internet rendezvous are unavailable.
+- Direct VPN sends connect straight to that IPv4 endpoint and do not request Rendezvous tickets, use Cloudflare, or use the TCP/TLS File Relay. The receiver's current listener port is assigned at startup and displayed in the transfer panel.
+- Authentication remains reciprocal TLS certificate pinning against the local trusted-device stores. IP and port only select the network route; they do not authorize a transfer. The receiver still approves each offer. File bytes stream through bounded 64 KiB buffers to a temporary file, with receiver-side SHA-256 verification before finalization.
+- Added sender cancellation, explicit connect/TLS and approval timeouts, a two-minute network-idle timeout during Direct VPN streaming, progress reporting, and partial-file cleanup when a transfer is cancelled or the connection is lost. Transfers remain non-resumable.
+- Verification on 2026-11-16: Windows client Debug build succeeded with **0 warnings and 0 errors**. The final `dotnet run --project tests/Nova.TransferEngine.Tests/Nova.TransferEngine.Tests.csproj -c Debug` run passed **22/22**, including a loopback Direct VPN transfer with SHA-256 comparison, cancellation and receiver-disconnect cleanup, IPv6 endpoint rejection, unknown-certificate rejection, and the existing Relay/WebRTC scenarios. One intermediate run hit a timeout at cycle 15/25 in the existing native WebRTC lifecycle stress test; the next full run completed all 25 cycles successfully.
+- These are same-host loopback checks, not a Radmin VPN acceptance test. Actual Radmin routing, two-computer transfer, Windows Firewall access to the listener port, user consent, cancellation, and disconnect behavior remain **NOT VERIFIED**.
+
+#### Direct VPN Critical Path
+
+1. On two Windows computers, exchange NOVA device pairing codes over a trusted out-of-band channel and mutually trust both device identities.
+2. Connect both computers to the same Radmin VPN network. Enter the receiver's Radmin IPv4 address and the current TCP port displayed by NOVA; verify the listener is permitted by Windows Firewall.
+3. Transfer a small file and a large file; verify SHA-256, progress, accept/reject, sender cancellation, and interruption cleanup. Confirm the route is direct and no Rendezvous/Relay connection is required.
+
+## NOVA Personal Windows Control Center — assessment and roadmap (2026-11-17)
+
+### Executive assessment
+
+NOVA is an existing Windows 10+ / .NET 10 WPF tray application, not a blank starter. Its recognizable black capsule, monitor-aware placement, tray lifecycle, dynamic island states, transfer engine, and several OS-backed services are useful foundations to preserve. The principal scale-up constraint is presentation architecture: `ShellWindow.xaml`, `ShellWindow.xaml.cs`, and `ShellWindow.Island.cs` form a single large window/code-behind surface, with view sections selected by visibility and event handlers. Feature services exist, but there is no general widget/module host or single composition/settings model.
+
+The nine requested areas are at different maturity levels:
+
+| Area | Current evidence | Gap to requested outcome |
+|---|---|---|
+| Capsule / audio-reactive shape | Expanded implementation: actual WASAPI loopback RMS, bass, treble and transient energy drive the existing capsule contour with attack/release smoothing; metadata, monitoring, network and local Radmin-adapter status can be selected and reordered. | DSP tests, live loopback smoke test and processing benchmark pass. Visual response and WPF render cost remain NOT VERIFIED; the capsule still belongs to the main window rather than a general widget contract. |
+| Control Center panel | Foundation implemented: compact/hover states plus a left widget workspace and right-side navigation backed by an in-process `WidgetRegistry`/`WidgetHost`. | The host is currently wired to existing views in the main window; a general module lifecycle/composition and common settings migration are still future work. GUI acceptance is not yet verified. |
+| Music | Partial and real: Windows Media Session metadata/artwork, play/pause, previous/next and seek when supported by the active player. | No volume control or queue/library. Yandex Music synchronized lyrics are not implemented; current UI explicitly explains that Windows Media Session does not supply lyrics. |
+| Full-screen workspace | Interactive full-screen workspace mode implemented using the selected monitor's bounds, with the same workspace/navigation and Escape/F11 exit. The compact click-through gaming HUD remains separate. | Actual GUI behavior, display hot-plug, and exclusive-fullscreen game interaction remain unverified. |
+| OBS | Not implemented in inspected source or direct package references. | No OBS WebSocket client, authentication, connection state, scene/source operations, or error/reconnect handling. |
+| OCR | Not implemented in inspected source or direct package references. | No screen-region capture, OCR engine integration, selection UI, result editing/copying/export, or privacy/permission flow. |
+| Browser adaptation | Not implemented in inspected source. | Existing Win32 usage is for NOVA's own window/overlay; no browser discovery, window selection, resize/placement, or restore workflow. |
+| Monitoring | Partial and real: CPU/RAM/GPU plus active IPv4 adapter throughput and local Radmin VPN adapter state; the capsule can select these indicators. | Disk metrics, history/trends, device-level GPU normalization, and a fallback provider are absent. The GPU counter can be unavailable and is displayed as unavailable rather than fabricated. |
+| Settings | Partial: existing General, Island, Weather, Gaming, Monitoring and Appearance pages; settings persist. | Preferences are distributed across `PanelPreferences`, transfer settings and Internet settings stores. There is no common module schema, validation/migration lifecycle, or central settings experience for future modules. |
+
+### Current architecture and constraints
+
+- `Nova.WindowsClient` targets `net10.0-windows10.0.19041.0`, WPF and WinForms, declares Windows 10 build 19041 as its supported OS floor, and directly references NAudio 3.3.0. The native WebRTC DLL is copied conditionally from the repository build output.
+- `Nova.Core.Contracts` holds a small number of cross-component contracts. `Nova.TransferEngine`, `Nova.TransferProtocol`, `Nova.RendezvousProtocol`, and `Nova.RendezvousService` are separate projects; these transfer/network components should remain intact and not become UI-module dependencies.
+- WPF composition is manual: `App` creates the transfer service and `ShellWindow`; the window owns media, audio meter, stats, timer, weather, and UI lifecycle. The current shell now has an in-process `WidgetRegistry`/`WidgetHost` for its existing views, but future modules still need broader service ownership, initialization/disposal, UI-thread dispatch, and error state.
+- The UI already handles multiple displays and PerMonitorV2 DPI for NOVA's own panel. Its `SetWindowLongPtr`/`SetWindowPos` behavior applies to the NOVA window only; it is not a general window-management service and does not establish safety for manipulating unrelated browser windows.
+- Existing `SystemStatsService` uses PDH for CPU and GPU Engine counters and `GlobalMemoryStatusEx` for RAM; it now samples aggregate active IPv4 adapter throughput and local Radmin adapter state, but not disk activity. Audio reactivity samples the render-endpoint loopback mix while the capsule is visible and the option is enabled; it does not record audio.
+- Music control uses `GlobalSystemMediaTransportControlsSessionManager`. This is a system media-control/metadata surface, not a general player API: support for seek/skip depends on each player. Volume needs a distinct Windows audio-session/endpoint design and explicit target selection; it must not be presented as a universally supported media-session command.
+- The transfer test project is a dependency-light console harness, not a `dotnet test` / WPF UI test suite; its latest recorded transfer verification is 22/22 on 2026-11-16. A separate Windows client console harness now covers capsule DSP inputs and a bounded analyzer throughput check, but neither harness verifies the rendered WPF UI or live audio device behavior.
+- The existing plan contains historical snapshots with earlier NOT VERIFIED statements superseded by later entries. Keep new acceptance results in a dated current section and distinguish recorded historical evidence from checks run for a future change.
+- A web-documentation fetch for Microsoft, OBS, and Yandex endpoints was blocked in the analysis environment. Accordingly, the exact supported OBS protocol/version, OCR language/runtime packaging behavior, and an authorized Yandex synchronized-lyrics API/terms are not claimed as verified here. Resolve these before committing to implementations that depend on them.
+
+### Target architecture
+
+1. **Keep the WPF and capsule foundation.** Do not replace the application shell or migrate UI frameworks. Preserve the current black styling, tray lifecycle, monitor/DPI logic, and existing services while moving one feature boundary at a time.
+2. **Add a composition root and a small compiled-widget contract.** A widget/module should declare stable ID, display metadata, capabilities, lifecycle (`initialize`/`activate`/`deactivate`/`dispose`), a view-model/service boundary, view, settings section, and failure/permission status. Begin with in-process compiled modules; do not add arbitrary dynamic plugin loading.
+3. **Separate shell, workspace, navigation, and modules.** Keep the compact capsule as the entry point; introduce one workspace host that displays the selected module on the left and shared navigation on the right. Reuse/move current module views into the host incrementally rather than duplicate their logic.
+4. **Centralize settings without a destructive migration.** Define typed, validated, versioned module settings and one save/migration boundary under the existing LocalAppData application state. Read and migrate current `settings.json`, transfer settings, and Internet settings before switching writes; retain existing values and report persistence errors.
+5. **Isolate Windows and vendor integrations.** Put WASAPI, PDH, media-session, capture/OCR, monitor/window, OBS WebSocket, and any Yandex API behind narrow service interfaces. Keep WPF controls on the dispatcher; perform network, OCR and metric work asynchronously with cancellation, bounded resources, and explicit unavailable/permission/error states.
+6. **Use measurable module acceptance.** Each module needs core/service tests with controlled inputs, a Windows integration check against the actual OS/vendor endpoint, and UI scenarios for permissions, no-data/offline state, errors and disposal. Test click-through, mixed DPI and display changes on real Windows configurations.
+
+### Ordered implementation plan and estimates
+
+Estimates are one experienced Windows/.NET developer's engineering time, excluding external account/credential wait and cross-machine scheduling. Some post-foundation modules can proceed independently, but the critical path is the shell/settings foundation and user acceptance.
+
+| Stage | Scope and dependency | Estimate | Main risks / exit criteria |
+|---|---|---:|---|
+| 0. Product/API feasibility | Confirm screens, module scope, privacy, exact volume target, OCR languages/export, OBS actions, browser ownership/restore, and Yandex Music account/API/legal route. Prototype only as a bounded technical spike after this analysis is approved. | 3–5 days | **Lyrics is a feasibility blocker:** no supported/authorized synchronized-lyrics API was confirmed. Exit with documented API/auth/terms and fallbacks; otherwise mark lyrics blocked rather than scrape or evade access controls. |
+| 1. Module and settings foundation | Establish composition/lifecycle and module metadata/view-model conventions; add schema-versioned settings/migration and common error/capability handling. Keep existing preferences readable and migrate them without resetting values. | 2–3 weeks | Highest architectural leverage. Risks include breaking saved settings, duplicate timers/event handlers and shutdown leaks. Exit with current capsule/music/weather/system/transfer sections still operating through the new host boundary and migration tests. |
+| 2. Workspace and navigation | **Implemented as a shell foundation (2026-11-17):** selected module work area on the left and navigation on the right, retaining compact/hover states and persistence. | Complete for this increment | Responsive sizing, keyboard/focus, hide/restore, and multi-monitor GUI acceptance are still NOT VERIFIED. |
+| 3. Capsule feature completion | **Implemented as a capsule increment (2026-11-17):** WASAPI level/bass/treble/transient analysis, smoothed contour/glow, content toggles and layout presets; audio analysis remains off the UI thread. | Implemented; acceptance pending | DSP tests and benchmark pass. Confirm actual audio playback, silence return, mixed display scaling and whole-UI frame/CPU cost on the running NOVA shell. Module-contract migration remains separate. |
+| 4. Full-screen workspace | **Implemented as a shell foundation (2026-11-17):** interactive workspace on the selected monitor with Escape/F11 return; the gaming click-through HUD remains separate. | Complete for this increment | Focus capture, taskbar/z-order, exclusive-fullscreen and display hot-plug behavior vary by Windows/app and remain NOT VERIFIED. |
+| 5. Music controls and lyrics feasibility | First add volume only after deciding whether it controls master output or a selected app/session/device; make target and unavailable states explicit. Add synchronized lyrics only if Stage 0 proves an authorized supported source. | 1–2 weeks volume; lyrics 2–4+ weeks conditional | Volume API behavior differs by endpoint/session and may affect other applications. Lyrics auth, rate limits, synchronization, language/catalog coverage, service terms and DRM are unresolved; no scraping/private API workaround. Exit with real supported player tests and explicit no-support behavior. |
+| 6. Monitoring expansion | Add disk metrics and refine the new aggregate network sampling behind a provider that identifies disks/adapters, handles counter resets, and exposes units/sample timestamps. Keep the existing CPU/RAM/GPU provider until replacement is justified. | 1–2 weeks | PDH counter localization/availability, multi-GPU and adapter selection, virtual disks, sleep/resume, sampling load. Exit with multiple-device samples, absent-device/error states, and no fabricated zero values. |
+| 7. OBS integration | Add an optional OBS WebSocket adapter with explicit endpoint/port, authentication handshake, secure secret storage, connection lifecycle and a bounded set of requested real commands/state. Use the installed/officially supported OBS WebSocket version determined in Stage 0. | 1–2 weeks | Version mismatch, password handling, OBS stopped/restarted, local firewall, command permissions and user consent. Do not log secrets. Exit with tests against a real local OBS instance, auth failure and reconnect. |
+| 8. OCR | Add a user-invoked region selector and Windows capture/OCR adapter, then result review/copy/export. Make capture and data retention visible; do not capture in background. | 1–2 weeks | Windows.Graphics.Capture/WinRT interop, OCR language packs (often dependent on installed Windows languages), mixed DPI, protected content and privacy. Exit with supported-language checks and tests for cancel/no-text/recognition error. |
+| 9. Browser adaptation | Only after windowing design review, add explicit browser/window opt-in, preview, placement rules around the capsule, and restore of original bounds/state on disable/exit. | 2–3 weeks | Third-party windows/tabs, multiple profiles, DPI/monitor changes, fullscreen/maximized windows, user races and potentially elevated processes. Do not enumerate/reposition all windows implicitly; never leave browser windows displaced after NOVA exits. |
+| 10. Integration and release acceptance | Consolidate settings UX, accessibility/keyboard/focus, dark visual consistency, diagnostics, update/docs, regression and clean publish. Run module lifecycle/long-session tests and actual Windows UI scenarios. | 1–2 weeks | Cross-module settings/lifecycle defects and OS variations. Exit only on clean build, service tests, actual OBS/player/capture checks, and release GUI verification; record untested hardware/OS cases as NOT VERIFIED. |
+
+**Overall planning envelope:** approximately **12–18 engineering weeks** to deliver and validate the foundation plus the non-blocked modules sequentially. Yandex synchronized lyrics have no committed delivery date until the feasibility stage finds a supported, authorized source; any API/terms or authentication blocker can exclude that feature without blocking the Control Center.
+
+### Critical Path
+
+1. Approve module UX, permissions, browser behavior and observable acceptance criteria; resolve media volume semantics and run the external API/terms feasibility spike.
+2. Build the in-process module lifecycle/composition and backward-compatible settings migration while preserving the existing capsule and services.
+3. **Implemented:** deliver the left-workspace/right-navigation host; remaining work is GUI acceptance and lifecycle proof for existing modules.
+4. **Implemented as a shell foundation:** add full-screen behavior; full OS/UI acceptance and module migration through a broader module contract remain.
+5. **Implemented as a capsule increment:** add selectable audio bands, real compact system/network/VPN data, and persisted content/layout settings; perform GUI acceptance before moving to later module stages.
+6. Implement OBS and OCR behind isolated, optional adapters with explicit authentication/consent/errors. Proceed with Yandex lyrics only if Stage 0 yields an authorized API.
+7. Add browser placement last, with opt-in and restoration guarantees.
+8. Complete full UI/integration/release verification and document real-device/driver/API NOT VERIFIED cases.
+
+### Capsule system implementation checkpoint (2026-11-17)
+
+**Implemented**
+
+- Replaced the bass-only, media-session-gated response with WASAPI loopback analysis that runs while the capsule is visible and audio reactivity is enabled. It measures overall RMS level, a low-pass bass band, a high-pass treble band, and fast level/peak rises; silence and capture shutdown feed zero into smoothed envelopes.
+- Drives the existing pill/capsule contour from those real band levels: volume creates broad movement, bass creates low-order organic lobes, treble adds smaller high-order ripples, and transient energy creates a short pulse. Attack/release smoothing and phase advancement are deterministic; no random animation or media playback assumption is used.
+- Improved the capsule surface with a graphite vertical gradient, restrained gold contour glow and a fuller outline while preserving the original silhouette. The display refresh remains timer-driven at about 30 Hz; audio decoding/analysis remains on the WASAPI callback thread.
+- Added persisted visibility controls for clock/date, weather, track title/artist, available cover art, playback status, CPU/GPU/RAM, network throughput and the local Radmin VPN adapter. Added four compact-block layout presets. Full track/artist values remain available via text and hover tooltips; stationary decorative audio bars were removed.
+- Added network receive/send rates from active IPv4 adapter counters. The VPN indicator reports only whether a Radmin VPN adapter is present/up with IPv4; it does not claim that a peer or remote network is reachable.
+
+**Verification**
+
+- `dotnet build src\Nova.WindowsClient\Nova.WindowsClient.csproj --no-restore` — passed, 0 warnings and 0 errors.
+- `dotnet run --project tests\Nova.WindowsClient.Tests\Nova.WindowsClient.Tests.csproj -c Release` — passed 6/6: silence baseline, bass/treble separation, level response, transient decay, live WASAPI loopback startup, and analyzer throughput.
+- Live WASAPI smoke test observed non-silent system audio (normalized level 0.66 in the latest run); the test only computes bands and does not record or save audio.
+- Analyzer benchmark: 30 seconds of synthetic 48 kHz samples processed in approximately 31 ms (about 0.1% of the represented audio duration in the latest run). This measures the DSP analyzer only, not WPF rendering.
+- **Actual playback-to-visible-contour response, full capsule render CPU/frame time, and GUI settings/layout behavior: NOT VERIFIED.** The already-running NOVA process is an older single-instance published build; it was not closed or replaced. The synthetic signals verify DSP behavior, while the smoke test verifies loopback capture availability only.
+
+**Remaining Critical Path**
+
+1. Verify the built capsule with real system audio and silence, including music metadata/artwork and the new settings/layout controls.
+2. Measure whole-window CPU/frame behavior on the updated shell, then resolve any issues before starting later roadmap stages.
+
+### Workspace and full-screen implementation checkpoint (2026-11-17)
+
+**Implemented**
+
+- Added an in-process `WidgetRegistry`/`WidgetHost` and registered the existing Overview, Music, Weather, VPN, Timer, System, Transfer, History, and Settings views. Selection controls the left workspace and right navigation without duplicating those views.
+- Reshaped the expanded panel into the selected widget workspace on the left and widget navigation on the right; retained the existing compact capsule and transient hover state.
+- Added an interactive full-screen state that fills the selected monitor and uses the workspace, with Escape/F11 return to the expanded workspace. It does not replace the separate gaming click-through HUD.
+- Persisted selected widget and expanded workspace size, position, and monitor alongside existing capsule preferences. Added target-monitor DPI-aware bounds restoration and clamps saved size/position to the selected display's usable area.
+- Added workspace resizing and responsive navigation sizing. This is a first shell foundation, not completion of the planned general module lifecycle, centralized settings migration, or other roadmap features.
+
+**Verification**
+
+- `dotnet build src\Nova.WindowsClient\Nova.WindowsClient.csproj --no-restore` — passed, 0 warnings and 0 errors.
+- `dotnet run --project tests\Nova.TransferEngine.Tests\Nova.TransferEngine.Tests.csproj -c Debug --no-restore` — passed, 22/22 checks. This is the existing transfer regression harness and does not exercise the WPF workspace.
+- `git diff --check` — passed; Git reported existing LF-to-CRLF working-copy warnings.
+- **GUI, mixed-DPI/multi-monitor behavior, display hot-plug, hide/restore, keyboard focus, and fullscreen game interaction: NOT VERIFIED.** The GUI was not exercised; the running single-instance application was an older published build, so it was not closed or replaced during this change.
+
+**Remaining Critical Path**
+
+1. Manually verify the updated shell on Windows, including module switching, resize and persistence, restore/hide, Escape/F11, multiple monitors and mixed DPI.
+2. Address any findings before starting subsequent roadmap stages. No later feature stage is part of this implementation.
+
+## Release v3 publication and desktop shortcut (2026-11-17)
+
+- Superseded by the UX refresh and v4 publication recorded below; retained as release history.
+- Published the current Windows client as a self-contained `win-x64` Release to `build/NOVA-Taskbar-Release-v3/publish/`.
+- `dotnet publish src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --runtime win-x64 --self-contained true --output build/NOVA-Taskbar-Release-v3/publish` completed successfully. The publish contains 490 files and targets `.NETCoreApp,Version=v10.0/win-x64`.
+- The published `Nova.TaskBar.dll` SHA-256 is `0F9DD024D300A0202086B5073C53BE0EA92D184CE83DB60C68EE5F9AB45AC58A`, identical to the freshly built `win-x64` Release DLL and different from the older v2 publication. `nova_webrtc.dll` is present and matches `build/native-x64/Release/nova_webrtc.dll` (SHA-256 `D20B95A4BD449CE7E444F9A5C491F1775A24CFB90CC481EBC5E6628F6652BB3F`).
+- Updated `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; its target, working directory, and icon now point to the v3 publish directory. Shortcut properties were read back and verified.
+- The previous `NOVA-Taskbar-BeatReactive-Release` process (PID 16756 at verification) was left running and was not replaced. **GUI/runtime behavior of v3 is NOT VERIFIED**; after the old NOVA instance is closed, launch the desktop shortcut to start v3.
+
+## Music layout and capsule response refresh (2026-11-17)
+
+- Replaced the music widget's fixed 230 px artwork/metadata column and narrow adjacent text column with a responsive artwork-and-metadata header, a full-width text/status panel, and a separate playback control row. Artwork scales with the available widget width; long track titles and artist names wrap instead of being clipped. Missing artwork/title/artist now have explicit placeholders.
+- Increased the expanded workspace default to 1040×700 and minimum to 820×560 DIPs, bounded by the current monitor work area. The widget navigation is now a two-column tile grid, showing all eight registered widgets without a navigation scrollbar.
+- Capsule deformation now varies along the contour rather than only by edge normal, with stronger bass waves, high-frequency ripples, and beat peaks. The orange glow responds more visibly to measured audio energy. The signal still comes from real WASAPI loopback capture; no random motion was introduced.
+- The music text panel is now readable at normal sizes, but **synchronized song lyrics are NOT IMPLEMENTED**: Windows Media Session does not provide lyrics and no lyrics source is connected. The widget states this rather than displaying fabricated lyrics.
+
+### Verification
+
+- `dotnet build src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --no-restore` — passed, 0 warnings and 0 errors.
+- `dotnet run --project tests/Nova.WindowsClient.Tests/Nova.WindowsClient.Tests.csproj --configuration Release --no-restore` — passed **6/6**, including live WASAPI loopback (non-silent sample observed) and real-time analyzer throughput.
+- `dotnet run --project tests/Nova.TransferEngine.Tests/Nova.TransferEngine.Tests.csproj --configuration Debug --no-restore` — passed **22/22**. Expected transport disconnect/authentication diagnostics were emitted by the cancellation and rejection scenarios; those scenarios passed.
+- `git diff --check` on the changed WPF files — passed.
+- Self-contained x64 publish to `build/NOVA-Taskbar-Release-v4/publish/` completed successfully (490 files; runtime `.NETCoreApp,Version=v10.0/win-x64`, bundled .NET 10.0.14 runtimes). Published `Nova.TaskBar.dll` SHA-256: `682968EBA85F887EBBE0F74CFF969CDA917FD2DCD27D144E749E55C10BDA8A00`; `nova_webrtc.dll` matches the native Release artifact.
+- Updated and read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; target, working directory, and icon point to the v4 publish folder.
+- **GUI, visual scaling, and mixed-DPI/multi-monitor behavior of v4: NOT VERIFIED.** The existing single-instance process (PID 4124) was left running from v3 and was not interrupted. Close that instance before launching v4 from the desktop shortcut.
+
+## Widget center and music integration (2026-11-17)
+
+### Research findings and implementation
+
+- The existing `MediaSessionService` uses Windows Global System Media Transport Controls (GSMTC). It provides title, artist, album title, thumbnail, playback status, timeline, transport commands and a seek request. It does **not** expose the active source's playback queue or a per-player volume control. NOVA now displays album metadata when provided, retains previous/next/play-pause/seek, and adds a clearly labelled Windows master-volume slider (this affects all apps).
+- The selected widget now uses the existing `WidgetRegistry`/`WidgetHost`. Main navigation prioritizes Music, VPN, Timer, Monitoring, OBS and Tools; the prior Overview, Weather, Transfer, History and Settings pages remain registered. Selected-state styling remains bound to the registry; old persisted `System` selection migrates to `Monitoring`. Tools links to existing pages. OBS clearly reports that WebSocket control is unavailable because there is no OBS client or connection configuration in this project; no simulated controls were added.
+- Yandex Music's lyrics/search API was investigated using the `MarshalX/yandex-music-api` project. Its own README calls the API unofficial; its client documents track search and `/tracks/{id}/lyrics` with `format=LRC`, an OAuth token, a request signature and a returned download URL. NOVA adds an optional LRC client without adding the Python library or another package. The user enters an OAuth token in a password field; it remains in process memory only and is not written to NOVA settings. Search requires an exact title and artist match before fetching lyrics. The LRC response is size-limited, downloaded only from HTTPS `*.yandex.net`, parsed into timed lines, and the token is not sent to the lyrics download URL.
+- Timed lyrics display the current line, scroll with the Windows media position and attempt a GSMTC seek when a line is clicked. If the player rejects seeking, NOVA reports that limitation. Untimed text is shown without synchronization. Tracks whose Windows metadata does not exactly match a Yandex result, missing lyrics, invalid tokens, API errors and timeouts are reported rather than silently substituted.
+- The Yandex API also has account-level queue endpoints, but their queue/device identity cannot be reliably associated with the active GSMTC session. The current media API therefore states that the session queue is unavailable rather than showing another device's queue as if it were current.
+
+Research references:
+
+- [Windows GSMTC session API](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession?view=winrt-26100)
+- [Yandex Music API client and LRC implementation](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/_client/tracks.py)
+- [Yandex Music timed-lyrics model](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/track/track_lyrics.py)
+- [Yandex Music queue/device API](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/_client/queue.py)
+- [Yandex Music request-signing reference](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/utils/sign_request.py)
+
+### Verification and remaining limits
+
+- `dotnet build src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --no-restore` — passed, 0 warnings and 0 errors.
+- `dotnet run --project tests/Nova.WindowsClient.Tests/Nova.WindowsClient.Tests.csproj --configuration Release --no-restore` — passed **8/8**: audio DSP, LRC timestamp/untimed-text parsing, read-only Windows master-volume query, live WASAPI loopback, and throughput.
+- `dotnet run --project tests/Nova.TransferEngine.Tests/Nova.TransferEngine.Tests.csproj --configuration Debug --no-restore` — passed **22/22**; cancellation and trust-rejection cases emitted their expected transport/authentication diagnostics.
+- `git diff --check` on the changed implementation/test files — passed.
+- **Live Yandex authorization/API, a real matching Yandex track, and seek behavior: NOT VERIFIED** because no user OAuth token/player session was supplied for a live API run. LRC format parsing itself is covered by tests. **GUI and per-app player behavior: NOT VERIFIED**; the running single-instance process is from an earlier v4 build, not this source revision.
+- OBS WebSocket control and active-session queue display remain **NOT IMPLEMENTED** for the backend/identity reasons above. Windows master-volume reading is verified; changing the master volume through the UI is **NOT VERIFIED** and affects all applications.
+
+## OBS, Screen Text/OCR, and Browser Adaptation (2026-11-17)
+
+### Implemented
+
+- **OBS:** Added OBS installation discovery from uninstall registry entries and standard/Steam install paths; the installed Steam copy was detected in this environment. The OBS widget can explicitly launch OBS, connect, poll version/current scene/scene list/record status, start/stop recording in OBS, and apply a selected scene. NOVA sends no recording or scene commands until the user explicitly connects/clicks a control. It connects only to `127.0.0.1`, requires OBS WebSocket challenge authentication, keeps the password only for the connection attempt, clears the password box, never stores it in NOVA settings, and creates no firewall rules.
+- The stock `obs-websocket` implementation has important security limits: its server listens on wildcard interfaces (the IPv4-only switch still binds all IPv4 interfaces), and its own configuration code stores `server_password` in OBS's JSON configuration without encryption. NOVA cannot make the stock server loopback-only or change OBS's storage behavior. The UI warns users to keep authentication enabled and restrict inbound access in Windows Firewall. OBS is not launched automatically by Connect; the user must explicitly use **Запустить OBS**.
+- **Screen Text/OCR:** Added a virtual-desktop region selector using physical pointer coordinates, captures only the selected rectangle in memory, and passes it to the built-in Windows OCR engine. Available Windows OCR language packs are listed; users can select a language or use profile languages. The separate result window supports editing, copying, formatting cleanup, translation, and retaking the selection. Images are not written to disk. Translation sends text to MyMemory only after an explicit confirmation, over HTTPS, and rejects requests longer than its 500-character free-endpoint limit.
+- **Browser Adaptation:** Added a persisted General-settings toggle. When enabled, Windows `EnumWindows`/window-placement APIs track top-level windows from Chrome, Edge, Firefox, Brave, Opera, Opera GX, Vivaldi and Arc. Overlapping windows are moved/resized into available monitor work area; original placement is restored when no longer needed or when the toggle is disabled. The feature does not reserve a global AppBar/work area or alter non-browser windows. It pauses when NOVA's capsule is not displayed. Some protected windows may refuse repositioning; F11/fullscreen browser windows can be resized while enabled.
+
+### Verification
+
+- `dotnet build src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --no-restore` — **BUILD VERIFIED**, 0 warnings and 0 errors.
+- `dotnet run --project tests/Nova.WindowsClient.Tests/Nova.WindowsClient.Tests.csproj --configuration Release --no-restore` — **15/15 passed**. Includes a real Windows OCR engine recognition of an in-memory text image, OBS v5 challenge-authenticated loopback protocol/read-state/scene/record command test peer, fixed authentication vector, installed-OBS detection without launching OBS, browser geometry, text cleanup/translation limits, and existing audio checks.
+- MyMemory's live HTTPS endpoint was separately queried with the non-sensitive text `Hello`; it returned HTTP/API status 200 and a Russian translation.
+- **Actual OBS recording/scene changes: NOT VERIFIED.** OBS was already running, and its WebSocket password/configuration was not available; the tests exercise the production WebSocket client against a loopback protocol peer, not the OBS application.
+- **Browser window movement/restoration in a real browser: NOT VERIFIED.** No supported browser process was running, so only the geometry logic was tested. Multi-monitor/mixed-DPI region selection and browser window behavior also remain **NOT VERIFIED** in this single-instance GUI session; an older v4 NOVA process was running and was not interrupted.
+- **Security limitation:** NOVA itself stores no OBS password, but OBS's stock plugin stores its configured password in plaintext in OBS's own config file and can listen on all interfaces. Users must account for both when enabling the OBS server. NOVA does not modify that config or the Windows Firewall.
+
+Research references:
+
+- [obs-websocket v5 protocol](https://github.com/obsproject/obs-websocket/blob/e28f84975984340e84fc4879cfc05741cc0afde1/docs/generated/protocol.md)
+- [OBS WebSocket configuration storage](https://github.com/obsproject/obs-websocket/blob/e28f84975984340e84fc4879cfc05741cc0afde1/src/Config.cpp)
+- [OBS WebSocket listener binding](https://github.com/obsproject/obs-websocket/blob/e28f84975984340e84fc4879cfc05741cc0afde1/src/websocketserver/WebSocketServer.cpp)
+- [Windows OCR engine](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine)
+- [MyMemory API](https://mymemory.translated.net/doc/spec.php)
+
+## Release v5 publication and desktop shortcut (2026-11-17)
+
+- Published the current Windows client as a self-contained `win-x64` Release to `build/NOVA-Taskbar-Release-v5/publish/` with `dotnet publish src/Nova.WindowsClient/Nova.WindowsClient.csproj --configuration Release --runtime win-x64 --self-contained true --output build/NOVA-Taskbar-Release-v5/publish`. The publish contains 490 files and bundles .NET 10.0.14.
+- The published `Nova.TaskBar.dll` matches the RID-specific Release build (SHA-256 `D6DEA3D28230C8C34820B72FF99F31D435B9C2DF12A88D6B9091E424EFC5000F`). The packaged `nova_webrtc.dll` matches the native Release artifact (SHA-256 `D20B95A4BD449CE7E444F9A5C491F1775A24CFB90CC481EBC5E6628F6652BB3F`). Both the apphost EXE and native DLL have x64 PE machine type `0x8664`.
+- Updated and read back `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; target, working directory and icon now point to the v5 publish directory.
+- Release build completed and the Windows client tests passed **15/15**. `git diff --check` passed; Git reported only its existing LF/CRLF normalization warnings.
+- **GUI/runtime of v5: NOT VERIFIED.** The previous v4 single-instance process (PID 9080) was left running and was not replaced. Close that instance normally before launching the desktop shortcut to start v5.

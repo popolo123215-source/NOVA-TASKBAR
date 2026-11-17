@@ -33,6 +33,8 @@ internal static class WebRtcIntegration
         var bOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var aConnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var bConnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var aIceConnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bIceConnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var aCandidate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var bCandidate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var aChannelClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -44,14 +46,16 @@ internal static class WebRtcIntegration
         var offerDecisions = new ConcurrentDictionary<string, TaskCompletionSource<bool>>(StringComparer.Ordinal);
         var failures = new ConcurrentQueue<Exception>();
         a.CreateReliableChannel($"nova-transfer-{cycle}");
-        var pumpA = PumpAsync(a, b, aOpened, aConnected, aCandidate, aChannelClosed, aReceived, nativeFrames, durableAcks, offerDecisions, failures, stop.Token);
-        var pumpB = PumpAsync(b, a, bOpened, bConnected, bCandidate, bChannelClosed, bReceived, nativeFrames, durableAcks, offerDecisions, failures, stop.Token);
+        var pumpA = PumpAsync(a, b, aOpened, aConnected, aIceConnected, aCandidate, aChannelClosed, aReceived, nativeFrames, durableAcks, offerDecisions, failures, stop.Token);
+        var pumpB = PumpAsync(b, a, bOpened, bConnected, bIceConnected, bCandidate, bChannelClosed, bReceived, nativeFrames, durableAcks, offerDecisions, failures, stop.Token);
 
         try
         {
             a.CreateOffer();
-            await Task.WhenAll(aOpened.Task, bOpened.Task, aConnected.Task, bConnected.Task, aCandidate.Task, bCandidate.Task).WaitAsync(Timeout);
+            await Task.WhenAll(aOpened.Task, bOpened.Task, aConnected.Task, bConnected.Task, aIceConnected.Task, bIceConnected.Task, aCandidate.Task, bCandidate.Task).WaitAsync(Timeout);
             if (failures.TryDequeue(out var failure)) throw new InvalidOperationException("Signaling callback failed.", failure);
+            Assert(a.GetSelectedCandidatePair() is { IsRelay: false } && b.GetSelectedCandidatePair() is { IsRelay: false },
+                "Local WebRTC integration did not select a direct candidate pair.");
 
             var payloadA = CreatePayload(16 * 1024 + 257, 0x51);
             await a.SendAsync(payloadA, stop.Token);
@@ -94,7 +98,8 @@ internal static class WebRtcIntegration
     }
 
     private static async Task PumpAsync(WebRtcPeer local, WebRtcPeer remote,
-        TaskCompletionSource opened, TaskCompletionSource connected, TaskCompletionSource candidateSeen,
+        TaskCompletionSource opened, TaskCompletionSource connected, TaskCompletionSource iceConnected,
+        TaskCompletionSource candidateSeen,
         TaskCompletionSource channelClosed,
         TaskCompletionSource<byte[]> received,
         Channel<byte[]> nativeFrames, Channel<long> durableAcks,
@@ -132,6 +137,10 @@ internal static class WebRtcIntegration
                         if (!string.IsNullOrWhiteSpace(candidateText)) candidateSeen.TrySetResult();
                         if (remoteDescriptionSet) remote.AddIceCandidate(candidateText, ev.Detail);
                         else pendingCandidates.Enqueue((candidateText, ev.Detail));
+                        break;
+                    case 8: // ICE state
+                        if (ev.Data.Length == sizeof(int) && BitConverter.ToInt32(ev.Data) is 2 or 3)
+                            iceConnected.TrySetResult();
                         break;
                     case 4: // DataChannel open
                         opened.TrySetResult();

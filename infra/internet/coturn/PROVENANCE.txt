@@ -1,0 +1,24 @@
+NOVA bundled coturn runtime
+
+Upstream: https://github.com/coturn/coturn
+Version reported by the executable: Coturn-4.19.0 'Gorst'
+Source commit: 160dad2ea98fcacd3c925a6bfbc02ff81055a1d6
+Build: official upstream GitHub Actions MSVC v143 x64 Release, shared libraries enabled
+Workflow run: https://github.com/coturn/coturn/actions/runs/43870339227
+Artifact: coturn_msvc-v143-x64-ON (ID 14229390186)
+
+Downloaded artifact ZIP SHA-256, verified against the GitHub Actions artifact digest:
+71aa26057972673be42ecb34b400d76f728df8ab23b1bfd7ebdde311c3f119ab
+
+Included coturn_windows_msvc.zip SHA-256:
+5ad1d26918bf84f8c4f465965f6fbde230fd1fc8954c849bbcd78feba74cf766
+
+turnserver.exe SHA-256:
+69c1aac07a2308ef2244cad2e9aa1d29e4d4b14815d7bab0f8ee430b3fc24cca
+
+SHA256SUMS.txt lists the bundled executable, every included runtime DLL, and LICENSE.
+The executable has no Authenticode signature. Its provenance is tied to the official
+upstream workflow artifact and its verified archive digest; the executable hash above
+is computed separately and is not the GitHub artifact digest.
+
+The upstream LICENSE is included. No secrets or certificates are bundled.

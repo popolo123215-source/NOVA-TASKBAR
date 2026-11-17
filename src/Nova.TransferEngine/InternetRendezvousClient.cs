@@ -39,6 +39,16 @@ public sealed class InternetRendezvousClient : IAsyncDisposable
     public event Action<string, WebRtcSignal>? SignalReceived;
     public InternetConnectionStatus Status { get { lock (_stateGate) return _status; } }
     public IReadOnlyList<RendezvousDevice> Devices { get { lock (_stateGate) return _devices.ToArray(); } }
+    public Uri? FileRelayEndpoint
+    {
+        get
+        {
+            if (_endpoint is null) return null;
+            var builder = new UriBuilder(_endpoint) { Path = "/v1/relay", Query = "", Fragment = "" };
+            return builder.Uri;
+        }
+    }
+    internal string? ServerCertificateFingerprint => _serverCertificateFingerprint;
 
     public Task ConnectAsync(Uri endpoint, string? pinnedServerCertificateSha256 = null)
     {
@@ -79,6 +89,20 @@ public sealed class InternetRendezvousClient : IAsyncDisposable
         return uris;
     }
 
+    public async Task<FileRelayTicket> RequestFileRelayTicketAsync(string transferId, string peerDeviceId, CancellationToken token)
+    {
+        var frame = await RequestAsync("relay-ticket", new FileRelayTicketRequest(transferId, peerDeviceId),
+            "relay-ticket", token).ConfigureAwait(false);
+        var ticket = frame.ReadPayload<FileRelayTicket>();
+        if (ticket is null || string.IsNullOrEmpty(ticket.Token) ||
+            ticket.TransferId != transferId || ticket.DeviceId != _identity.Device.DeviceId ||
+            ticket.PeerDeviceId != peerDeviceId || ticket.Role is not ("sender" or "recipient") ||
+            ticket.Token.Length != 43 || ticket.Token.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_')) ||
+            ticket.ExpiresAt <= DateTimeOffset.UtcNow || ticket.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(2).AddSeconds(5))
+            throw new InvalidDataException("NOVA Network returned an invalid TCP/TLS relay ticket.");
+        return ticket;
+    }
+
     private async Task<RendezvousFrame> RequestAsync<T>(string type, T payload, string expectedType, CancellationToken token)
     {
         var socket = _socket;
@@ -111,13 +135,7 @@ public sealed class InternetRendezvousClient : IAsyncDisposable
             using var socket = new ClientWebSocket();
             socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
             socket.Options.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
-            {
-                if (_serverCertificateFingerprint is null) return errors == System.Net.Security.SslPolicyErrors.None;
-                if (certificate is null || (errors & (System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch |
-                    System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable)) != 0) return false;
-                var fingerprint = Convert.ToHexString(SHA256.HashData(certificate.GetRawCertData()));
-                return string.Equals(fingerprint, _serverCertificateFingerprint, StringComparison.OrdinalIgnoreCase);
-            };
+                ValidateServerCertificate(certificate, errors);
             try
             {
                 await socket.ConnectAsync(endpoint, token).ConfigureAwait(false);
@@ -189,6 +207,7 @@ public sealed class InternetRendezvousClient : IAsyncDisposable
                     break;
                 case "signal-ack":
                 case "ice-credentials":
+                case "relay-ticket":
                 case "pong":
                     if (frame.RequestId is not null && _requests.TryGetValue(frame.RequestId, out var completion)) completion.TrySetResult(frame);
                     break;
@@ -281,6 +300,17 @@ public sealed class InternetRendezvousClient : IAsyncDisposable
         var next = new InternetConnectionStatus(state, detail);
         lock (_stateGate) _status = next;
         StatusChanged?.Invoke(next);
+    }
+
+    internal bool ValidateServerCertificate(X509Certificate? certificate, System.Net.Security.SslPolicyErrors errors)
+    {
+        if (_serverCertificateFingerprint is null)
+            return errors == System.Net.Security.SslPolicyErrors.None;
+        if (certificate is null || (errors & (System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch |
+            System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable)) != 0)
+            return false;
+        var fingerprint = Convert.ToHexString(SHA256.HashData(certificate.GetRawCertData()));
+        return string.Equals(fingerprint, _serverCertificateFingerprint, StringComparison.OrdinalIgnoreCase);
     }
 
     private void FailPending(Exception error)

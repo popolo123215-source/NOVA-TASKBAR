@@ -14,14 +14,18 @@ namespace Nova.TransferEngine;
 
 public sealed class LocalTransferService : IAsyncDisposable
 {
+    private static readonly TimeSpan DirectVpnConnectTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DirectVpnNetworkIdleTimeout = TimeSpan.FromMinutes(2);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connectionLimit = new(4, 4);
     private readonly List<Task> _handlers = [];
     private readonly object _handlerGate = new();
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _directVpnTransfers = new(StringComparer.Ordinal);
     private readonly TcpListener _listener;
     private readonly WebRtcSignalingHub _webRtcSignaling = new();
     private readonly ConcurrentDictionary<string, long> _seenSignalNonces = new(StringComparer.Ordinal);
     private readonly InternetRendezvousClient _internet;
+    private readonly TcpTlsFileRelayClient _fileRelay;
     private readonly WebRtcTransferCoordinator _webRtcCoordinator;
     private readonly bool _ownsIdentity;
     private LanDiscoveryService? _discovery;
@@ -39,12 +43,14 @@ public sealed class LocalTransferService : IAsyncDisposable
         Settings = new TransferSettingsStore(stateDirectory);
         InternetSettings = new InternetModeSettingsStore(stateDirectory);
         _internet = new InternetRendezvousClient(Identity, TrustedPeers);
+        _fileRelay = new TcpTlsFileRelayClient(Identity, _internet);
         _internet.SignalReceived += OnInternetSignalReceived;
         _internet.StatusChanged += status => InternetStatusChanged?.Invoke(status);
         _internet.DevicesChanged += devices => InternetDevicesChanged?.Invoke(devices);
         if (!string.IsNullOrWhiteSpace(destinationDirectory)) Settings.SetDestinationDirectory(destinationDirectory);
         _webRtcCoordinator = new WebRtcTransferCoordinator(Identity, TrustedPeers, Settings, _webRtcSignaling,
-            SendWebRtcSignalAsync, deviceId => GetAvailableDevices().FirstOrDefault(x => x.DeviceId == deviceId), GetIceServerUrisAsync);
+            SendWebRtcSignalAsync, deviceId => GetAvailableDevices().FirstOrDefault(x => x.DeviceId == deviceId),
+            GetIceServerUrisAsync, _fileRelay);
         _webRtcCoordinator.IncomingOffer += request => WebRtcIncomingOffer?.Invoke(request);
         _webRtcCoordinator.ProgressChanged += progress => WebRtcProgressChanged?.Invoke(progress);
         _listener = new TcpListener(IPAddress.Any, 0);
@@ -119,8 +125,17 @@ public sealed class LocalTransferService : IAsyncDisposable
         {
             if (enableDiscovery)
             {
-                _discovery = new LanDiscoveryService(Identity, TcpPort, TrustedPeers.IsTrusted);
-                _discovery.Start();
+                var discovery = new LanDiscoveryService(Identity, TcpPort, TrustedPeers.IsTrusted);
+                try
+                {
+                    discovery.Start();
+                    _discovery = discovery;
+                }
+                catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException)
+                {
+                    discovery.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    Console.Error.WriteLine($"[NOVA Transfer Engine] LAN discovery is unavailable; the direct TCP listener remains active: {ex}");
+                }
             }
             _started = true;
             _acceptLoop = AcceptLoopAsync(_lifetime.Token);
@@ -148,6 +163,12 @@ public sealed class LocalTransferService : IAsyncDisposable
             }
             byId[remote.DeviceId] = new DiscoveredDevice(remote.DeviceId, remote.DisplayName, IPAddress.None, 0,
                 remote.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.Internet, remote.Online, remote.Online);
+        }
+        foreach (var trusted in TrustedPeers.GetAll())
+        {
+            if (!byId.ContainsKey(trusted.Device.DeviceId))
+                byId[trusted.Device.DeviceId] = new DiscoveredDevice(trusted.Device.DeviceId, trusted.Device.DisplayName,
+                    IPAddress.None, 0, trusted.Fingerprint, trusted.TrustedAt, true, DeviceDiscoverySource.None, false);
         }
         return byId.Values.OrderBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
@@ -191,7 +212,33 @@ public sealed class LocalTransferService : IAsyncDisposable
         }
     }
 
-    public async Task SendFileAsync(DiscoveredDevice recipient, string filePath, CancellationToken cancellationToken = default)
+    public async Task SendDirectVpnFilesAsync(DiscoveredDevice recipient, IEnumerable<string> filePaths,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(recipient);
+        if (recipient.Address.AddressFamily != AddressFamily.InterNetwork || recipient.Port is < 1 or > 65535)
+            throw new ArgumentException("Direct VPN requires a numeric IPv4 address and a valid TCP port.", nameof(recipient));
+        if (!TrustedPeers.IsTrusted(recipient.Fingerprint))
+            throw new AuthenticationException("Сначала подтвердите отпечаток устройства-получателя.");
+        foreach (var path in filePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await SendFileCoreAsync(recipient, path, TransferTransportPreference.DirectVpn, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public bool CancelDirectVpnTransfer(string transferId)
+    {
+        if (!_directVpnTransfers.TryGetValue(transferId, out var cancellation)) return false;
+        try { cancellation.Cancel(); return true; }
+        catch (ObjectDisposedException) { return false; }
+    }
+
+    public Task SendFileAsync(DiscoveredDevice recipient, string filePath, CancellationToken cancellationToken = default) =>
+        SendFileCoreAsync(recipient, filePath, TransferTransportPreference.Automatic, cancellationToken);
+
+    private async Task SendFileCoreAsync(DiscoveredDevice recipient, string filePath,
+        TransferTransportPreference transportPreference, CancellationToken cancellationToken)
     {
         if (!_started) throw new InvalidOperationException("Служба передачи не запущена.");
         var trusted = TrustedPeers.Find(recipient.Fingerprint);
@@ -202,32 +249,65 @@ public sealed class LocalTransferService : IAsyncDisposable
 
         string transferId = Guid.NewGuid().ToString("N");
         string fileName = Path.GetFileName(info.FullName);
+        using var directVpnCancellation = transportPreference == TransferTransportPreference.DirectVpn
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token)
+            : null;
+        var transferToken = directVpnCancellation?.Token ?? cancellationToken;
+        if (directVpnCancellation is not null && !_directVpnTransfers.TryAdd(transferId, directVpnCancellation))
+            throw new InvalidOperationException("Direct VPN transfer id collision.");
         try
         {
             byte[] digest;
             await using (var source = new FileStream(info.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-                digest = await SHA256.HashDataAsync(source, cancellationToken);
+                digest = await SHA256.HashDataAsync(source, transferToken);
 
             var offer = new TransferOffer(transferId, Identity.Device, trusted.Device, fileName, info.Length, null,
-                Convert.ToHexString(digest), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(3), false);
+                Convert.ToHexString(digest), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(3), false)
+                { TransportPreference = transportPreference };
 
             using var client = new TcpClient(AddressFamily.InterNetwork) { NoDelay = true };
-            await client.ConnectAsync(recipient.Address, recipient.Port, cancellationToken);
+            if (transportPreference == TransferTransportPreference.DirectVpn)
+            {
+                using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(transferToken);
+                connectTimeout.CancelAfter(DirectVpnConnectTimeout);
+                try { await client.ConnectAsync(recipient.Address, recipient.Port, connectTimeout.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException ex) when (!transferToken.IsCancellationRequested)
+                { throw new TimeoutException("Direct VPN TCP connection timed out.", ex); }
+            }
+            else
+            {
+                await client.ConnectAsync(recipient.Address, recipient.Port, transferToken).ConfigureAwait(false);
+            }
             using var ssl = new SslStream(client.GetStream(), false, (_, certificate, _, _) =>
                 certificate is not null &&
                 Fingerprint(certificate) == trusted.Fingerprint &&
                 DeviceIdentity.DeviceIdFromCertificate(certificate) == trusted.Device.DeviceId);
-            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            var clientTlsOptions = new SslClientAuthenticationOptions
             {
                 TargetHost = "nova-lan-peer",
                 ClientCertificates = new X509CertificateCollection { Identity.Certificate },
                 EnabledSslProtocols = SslProtocols.None,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck
-            }, cancellationToken);
+            };
+            if (transportPreference == TransferTransportPreference.DirectVpn)
+            {
+                using var handshakeTimeout = CancellationTokenSource.CreateLinkedTokenSource(transferToken);
+                handshakeTimeout.CancelAfter(DirectVpnConnectTimeout);
+                try { await ssl.AuthenticateAsClientAsync(clientTlsOptions, handshakeTimeout.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException ex) when (!transferToken.IsCancellationRequested)
+                { throw new TimeoutException("Direct VPN TLS authentication timed out.", ex); }
+            }
+            else
+            {
+                await ssl.AuthenticateAsClientAsync(clientTlsOptions, transferToken).ConfigureAwait(false);
+            }
 
             TransferProgressChanged(offer, TransferState.Offered, 0);
-            await FramedJson.WriteAsync(ssl, WireEnvelope.Create("offer", offer), cancellationToken);
-            var decision = await FramedJson.ReadAsync<WireEnvelope>(ssl, cancellationToken);
+            await FramedJson.WriteAsync(ssl, WireEnvelope.Create("offer", offer), transferToken);
+            var decisionTask = FramedJson.ReadAsync<WireEnvelope>(ssl, transferToken);
+            var decision = transportPreference == TransferTransportPreference.DirectVpn
+                ? await decisionTask.WaitAsync(TimeSpan.FromMinutes(3), transferToken).ConfigureAwait(false)
+                : await decisionTask.ConfigureAwait(false);
             decision.EnsureVersion();
             if (decision.Type != "decision") throw new InvalidDataException("Получен неожиданный ответ устройства.");
             var reply = decision.ReadPayload<WireReply>();
@@ -247,20 +327,26 @@ public sealed class LocalTransferService : IAsyncDisposable
                 {
                     while (sent < offer.SizeBytes)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
+                        transferToken.ThrowIfCancellationRequested();
                         var wanted = (int)Math.Min(buffer.Length, offer.SizeBytes - sent);
-                        var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken);
+                        var read = await source.ReadAsync(buffer.AsMemory(0, wanted), transferToken);
                         if (read == 0) throw new EndOfStreamException("Исходный файл изменился во время передачи.");
-                        await ssl.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                        if (transportPreference == TransferTransportPreference.DirectVpn)
+                            await WriteWithTimeoutAsync(ssl, buffer.AsMemory(0, read), transferToken, DirectVpnNetworkIdleTimeout).ConfigureAwait(false);
+                        else
+                            await ssl.WriteAsync(buffer.AsMemory(0, read), transferToken).ConfigureAwait(false);
                         sent += read;
                         ProgressChanged?.Invoke(new LocalTransferProgress(transferId, fileName, TransferState.Transferring, sent, offer.SizeBytes));
                     }
-                    await ssl.FlushAsync(cancellationToken);
+                    await ssl.FlushAsync(transferToken);
                 }
                 finally { ArrayPool<byte>.Shared.Return(buffer); }
             }
 
-            var complete = await FramedJson.ReadAsync<WireEnvelope>(ssl, cancellationToken);
+            var completeTask = FramedJson.ReadAsync<WireEnvelope>(ssl, transferToken);
+            var complete = transportPreference == TransferTransportPreference.DirectVpn
+                ? await completeTask.WaitAsync(DirectVpnNetworkIdleTimeout, transferToken).ConfigureAwait(false)
+                : await completeTask.ConfigureAwait(false);
             complete.EnsureVersion();
             if (complete.Type != "complete") throw new InvalidDataException("Получен неожиданный ответ о завершении.");
             var result = complete.ReadPayload<WireReply>();
@@ -269,6 +355,13 @@ public sealed class LocalTransferService : IAsyncDisposable
             AddHistory(new TransferHistoryEntry(transferId, TransferDirection.Outgoing, trusted.Device.DisplayName,
                 fileName, offer.SizeBytes, DateTimeOffset.UtcNow, TransferState.Completed));
         }
+        catch (OperationCanceledException) when (directVpnCancellation?.IsCancellationRequested == true)
+        {
+            ProgressChanged?.Invoke(new LocalTransferProgress(transferId, fileName, TransferState.Cancelled, 0, info.Exists ? info.Length : 0));
+            AddHistory(new TransferHistoryEntry(transferId, TransferDirection.Outgoing, trusted.Device.DisplayName,
+                fileName, info.Exists ? info.Length : 0, DateTimeOffset.UtcNow, TransferState.Cancelled, "Передача отменена."));
+            throw;
+        }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
@@ -276,6 +369,11 @@ public sealed class LocalTransferService : IAsyncDisposable
             AddHistory(new TransferHistoryEntry(transferId, TransferDirection.Outgoing, trusted.Device.DisplayName,
                 fileName, info.Exists ? info.Length : 0, DateTimeOffset.UtcNow, TransferState.Failed, ex.Message));
             throw;
+        }
+        finally
+        {
+            if (directVpnCancellation is not null)
+                _directVpnTransfers.TryRemove(transferId, out _);
         }
     }
 
@@ -317,16 +415,33 @@ public sealed class LocalTransferService : IAsyncDisposable
     private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
     {
         using var ssl = new SslStream(client.GetStream(), false, (_, certificate, _, _) => IsTrustedClientCertificate(certificate));
-        await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+        using var handshakeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        handshakeTimeout.CancelAfter(DirectVpnConnectTimeout);
+        try
         {
-            ServerCertificate = Identity.Certificate,
-            ClientCertificateRequired = true,
-            EnabledSslProtocols = SslProtocols.None
-        }, cancellationToken);
+            await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+            {
+                ServerCertificate = Identity.Certificate,
+                ClientCertificateRequired = true,
+                EnabledSslProtocols = SslProtocols.None
+            }, handshakeTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Incoming TCP/TLS authentication timed out.", ex);
+        }
 
         var peerFingerprint = Fingerprint(ssl.RemoteCertificate ?? throw new AuthenticationException("Не предоставлен сертификат устройства."));
         var peer = TrustedPeers.Find(peerFingerprint) ?? throw new AuthenticationException("Устройство не подтверждено.");
-        var envelope = await FramedJson.ReadAsync<WireEnvelope>(ssl, cancellationToken);
+        WireEnvelope envelope;
+        try
+        {
+            envelope = await FramedJson.ReadAsync<WireEnvelope>(ssl, handshakeTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Incoming TCP/TLS request timed out.", ex);
+        }
         envelope.EnsureVersion();
         if (envelope.Type == "webrtc-signal")
         {
@@ -372,7 +487,8 @@ public sealed class LocalTransferService : IAsyncDisposable
                     while (received < offer.SizeBytes)
                     {
                         var wanted = (int)Math.Min(buffer.Length, offer.SizeBytes - received);
-                        var read = await ReadSomeAsync(ssl, buffer.AsMemory(0, wanted), cancellationToken);
+                        var read = await ReadSomeAsync(ssl, buffer.AsMemory(0, wanted), cancellationToken,
+                            offer.TransportPreference == TransferTransportPreference.DirectVpn ? DirectVpnNetworkIdleTimeout : null).ConfigureAwait(false);
                         if (read == 0) throw new EndOfStreamException("Передача оборвалась до получения файла целиком.");
                         await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                         hash.AppendData(buffer, 0, read);
@@ -398,15 +514,40 @@ public sealed class LocalTransferService : IAsyncDisposable
         {
             TryDelete(temporary);
             ProgressChanged?.Invoke(new LocalTransferProgress(offer.TransferId, offer.FileName, TransferState.Failed, 0, offer.SizeBytes));
-            await FramedJson.WriteAsync(ssl, WireEnvelope.Create("complete", new WireReply(false, "Не удалось сохранить и проверить файл.")), CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await FramedJson.WriteAsync(ssl, WireEnvelope.Create("complete", new WireReply(false, "Не удалось сохранить и проверить файл.")), CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception responseException) when (responseException is IOException or ObjectDisposedException or OperationCanceledException)
+            {
+                Console.Error.WriteLine($"[NOVA Transfer Engine] Не удалось отправить отказ о завершении передачи: {responseException}");
+            }
             AddHistory(new TransferHistoryEntry(offer.TransferId, TransferDirection.Incoming, peer.Device.DisplayName,
                 offer.FileName, offer.SizeBytes, DateTimeOffset.UtcNow, TransferState.Failed, ex.Message));
             throw;
         }
     }
 
-    private static async Task<int> ReadSomeAsync(Stream stream, Memory<byte> buffer, CancellationToken cancellationToken) =>
-        await stream.ReadAsync(buffer, cancellationToken);
+    private static async Task<int> ReadSomeAsync(Stream stream, Memory<byte> buffer, CancellationToken cancellationToken,
+        TimeSpan? idleTimeout = null)
+    {
+        if (idleTimeout is null) return await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(idleTimeout.Value);
+        try { return await stream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        { throw new TimeoutException("Direct VPN file receive timed out while waiting for data.", ex); }
+    }
+
+    private static async Task WriteWithTimeoutAsync(Stream stream, ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken, TimeSpan idleTimeout)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(idleTimeout);
+        try { await stream.WriteAsync(buffer, timeout.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        { throw new TimeoutException("Direct VPN file send timed out while waiting for the peer.", ex); }
+    }
 
     private void ValidateOffer(TransferOffer offer, string authenticatedSenderId)
     {
@@ -414,6 +555,7 @@ public sealed class LocalTransferService : IAsyncDisposable
             offer.Recipient.DeviceId != Identity.Device.DeviceId || offer.SizeBytes < 0 ||
             !PeerTrustStore.IsValidFingerprint(Identity.Fingerprint) ||
             offer.Sha256.Length != 64 || !offer.Sha256.All(Uri.IsHexDigit) ||
+            !Enum.IsDefined(typeof(TransferTransportPreference), offer.TransportPreference) ||
             offer.CreatedAt > DateTimeOffset.UtcNow.AddMinutes(2) || offer.ExpiresAt < DateTimeOffset.UtcNow ||
             offer.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(10))
             throw new InvalidDataException("Предложение передачи не прошло проверку.");

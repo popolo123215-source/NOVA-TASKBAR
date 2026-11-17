@@ -13,6 +13,7 @@ std::mutex peers_gate;
 std::unordered_map<int,std::shared_ptr<Peer>> peers;
 std::shared_ptr<Peer> get(int id) { std::lock_guard l(peers_gate); auto i=peers.find(id); return i==peers.end()?nullptr:i->second; }
 void NOVA_CALL state_cb(int id, rtcState s, void*) { if(auto p=get(id); p&&p->cb) p->cb(p->user,1,(const uint8_t*)&s,sizeof(s),nullptr); }
+void NOVA_CALL ice_state_cb(int id, rtcIceState s, void*) { if(auto p=get(id); p&&p->cb) p->cb(p->user,8,(const uint8_t*)&s,sizeof(s),nullptr); }
 void NOVA_CALL desc_cb(int id,const char* sdp,const char* type,void*) { if(auto p=get(id);p&&p->cb)p->cb(p->user,2,(const uint8_t*)sdp,(int32_t)strlen(sdp),type); }
 void NOVA_CALL cand_cb(int id,const char* c,const char* mid,void*) { if(auto p=get(id);p&&p->cb)p->cb(p->user,3,(const uint8_t*)c,(int32_t)strlen(c),mid); }
 void NOVA_CALL open_cb(int id,void* u) { auto p=(Peer*)u; if(p->cb)p->cb(p->user,4,nullptr,0,nullptr); }
@@ -38,7 +39,7 @@ int32_t nova_peer_create_ex(const char* const* ice,int32_t count,int32_t limit,i
  if(!out||count<0||count>32||(count>0&&!ice)||limit<16384||limit>1048576||(relay_only!=0&&relay_only!=1))return -1;
  std::vector<const char*> servers; if(count>0)servers.assign(ice,ice+count); rtcConfiguration cfg{}; cfg.iceServers=servers.data();cfg.iceServersCount=count;cfg.maxMessageSize=limit;cfg.disableAutoNegotiation=true;cfg.iceTransportPolicy=relay_only?RTC_TRANSPORT_POLICY_RELAY:RTC_TRANSPORT_POLICY_ALL;
  int id=rtcCreatePeerConnection(&cfg);if(id<0)return id;auto p=std::make_shared<Peer>();p->pc=id;p->limit=limit;p->cb=cb;p->user=user;
- {std::lock_guard l(peers_gate);peers[id]=p;} rtcSetUserPointer(id,p.get());rtcSetStateChangeCallback(id,state_cb);rtcSetLocalDescriptionCallback(id,desc_cb);rtcSetLocalCandidateCallback(id,cand_cb);rtcSetDataChannelCallback(id,remote_channel_cb);*out=id;return 0;
+ {std::lock_guard l(peers_gate);peers[id]=p;} rtcSetUserPointer(id,p.get());rtcSetStateChangeCallback(id,state_cb);rtcSetIceStateChangeCallback(id,ice_state_cb);rtcSetLocalDescriptionCallback(id,desc_cb);rtcSetLocalCandidateCallback(id,cand_cb);rtcSetDataChannelCallback(id,remote_channel_cb);*out=id;return 0;
 }
 int32_t nova_peer_get_selected_candidate_pair(int32_t id,char* local,int32_t local_size,char* remote,int32_t remote_size){auto p=get(id);if(!p||!local||!remote||local_size<=0||remote_size<=0)return -1;return rtcGetSelectedCandidatePair(p->pc,local,local_size,remote,remote_size);}
 int32_t nova_peer_create_channel(int32_t id,const char* label,int32_t* out){auto p=get(id);if(!p||!label||!out)return -1;int dc=rtcCreateDataChannel(p->pc,label);if(dc<0)return dc;setup_channel(p,dc);*out=dc;return 0;}

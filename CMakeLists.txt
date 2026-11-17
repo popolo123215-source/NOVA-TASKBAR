@@ -40,17 +40,19 @@ find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 set(PCRE2_USE_STATIC_LIBS ON)
 find_package(PCRE2 CONFIG REQUIRED)
-find_package(unofficial-libffi CONFIG REQUIRED)
 
 nova_import_vcpkg_static(NovaVcpkg::intl intl)
 nova_import_vcpkg_static(NovaVcpkg::iconv iconv)
 nova_import_vcpkg_static(NovaVcpkg::glib glib-2.0)
 nova_import_vcpkg_static(NovaVcpkg::gobject gobject-2.0)
+nova_import_vcpkg_static(NovaVcpkg::ffi ffi)
 nova_import_vcpkg_static(NovaVcpkg::gmodule gmodule-2.0)
 nova_import_vcpkg_static(NovaVcpkg::gthread gthread-2.0)
 nova_import_vcpkg_static(NovaVcpkg::gio gio-2.0)
 nova_import_vcpkg_static(LibNice::LibNice nice)
 
+set_target_properties(NovaVcpkg::ffi PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${NOVA_VCPKG_PREFIX}/include")
 set_target_properties(NovaVcpkg::glib PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES
     "${NOVA_VCPKG_PREFIX}/include/glib-2.0;${NOVA_VCPKG_PREFIX}/lib/glib-2.0/include"
@@ -58,7 +60,7 @@ set_target_properties(NovaVcpkg::glib PROPERTIES
     "PCRE2::8BIT;NovaVcpkg::intl;NovaVcpkg::iconv;ws2_32;winmm")
 set_target_properties(NovaVcpkg::gobject PROPERTIES
   INTERFACE_LINK_LIBRARIES
-    "NovaVcpkg::glib;unofficial::libffi::libffi;NovaVcpkg::intl")
+    "NovaVcpkg::glib;NovaVcpkg::ffi;NovaVcpkg::intl")
 set_target_properties(NovaVcpkg::gmodule PROPERTIES
   INTERFACE_LINK_LIBRARIES "NovaVcpkg::glib;NovaVcpkg::intl")
 set_target_properties(NovaVcpkg::gthread PROPERTIES

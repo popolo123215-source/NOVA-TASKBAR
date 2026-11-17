@@ -14,7 +14,11 @@ public partial class App : Application
 {
     private Mutex? _singleInstance;
     private NotifyIcon? _trayIcon;
+    private ContextMenuStrip? _trayMenu;
+    private ToolStripMenuItem? _overlayMoveItem;
+    private ToolStripMenuItem? _overlayExitItem;
     private bool _ownsMutex;
+    private bool _shutdownInProgress;
     private Icon? _novaIcon;
     private ShellWindow? _window;
     private LocalTransferService? _transferService;
@@ -40,13 +44,24 @@ public partial class App : Application
 
     private void InitializeTray()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Открыть NOVA", null, (_, _) => ShowPanel());
-        menu.Items.Add("Скрыть панель", null, (_, _) => _window?.Hide());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Завершить NOVA", null, (_, _) => ExitApplication());
+        _trayMenu = new ContextMenuStrip();
+        _trayMenu.Items.Add("Открыть NOVA", null, (_, _) => ShowPanel());
+        _trayMenu.Items.Add("Скрыть панель", null, (_, _) => _window?.Hide());
+        _trayMenu.Items.Add(new ToolStripSeparator());
+        _overlayMoveItem = new ToolStripMenuItem("Переместить игровой оверлей", null, (_, _) => _window?.BeginOverlayMove());
+        _overlayExitItem = new ToolStripMenuItem("Выключить игровой оверлей", null, (_, _) => _window?.ExitGamingOverlay());
+        _trayMenu.Items.Add(_overlayMoveItem);
+        _trayMenu.Items.Add(_overlayExitItem);
+        _trayMenu.Items.Add(new ToolStripSeparator());
+        _trayMenu.Items.Add("Завершить NOVA", null, async (_, _) => await ExitApplicationAsync());
+        _trayMenu.Opening += (_, _) =>
+        {
+            var overlayActive = _window?.IsGamingOverlayActive == true;
+            _overlayMoveItem.Enabled = overlayActive;
+            _overlayExitItem.Enabled = overlayActive;
+        };
         _novaIcon = CreateNovaTrayIcon();
-        _trayIcon = new NotifyIcon { Text = "Панель NOVA", Icon = _novaIcon, ContextMenuStrip = menu, Visible = true };
+        _trayIcon = new NotifyIcon { Text = "Панель NOVA", Icon = _novaIcon, ContextMenuStrip = _trayMenu, Visible = true };
         _trayIcon.DoubleClick += (_, _) => ShowPanel();
     }
 
@@ -70,29 +85,31 @@ public partial class App : Application
 
     private void ShowPanel()
     {
-        if (_window is null) return;
+        if (_shutdownInProgress || _window is null) return;
         _window.Show();
         if (_window.WindowState == WindowState.Minimized) _window.WindowState = WindowState.Normal;
         _window.Activate();
     }
 
-    public void ExitApplication()
+    private async Task ExitApplicationAsync()
     {
-        _trayIcon?.Dispose(); _trayIcon = null;
-        _novaIcon?.Dispose(); _novaIcon = null;
-        _window?.AllowClose();
+        if (_shutdownInProgress) return;
+        _shutdownInProgress = true;
+        if (_transferService is not null)
+        {
+            await _transferService.DisposeAsync();
+            _transferService = null;
+        }
+        if (_window is not null)
+            await _window.AllowCloseAsync();
         Shutdown();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         _trayIcon?.Dispose();
+        _trayMenu?.Dispose();
         _novaIcon?.Dispose();
-        if (_transferService is not null)
-        {
-            try { _transferService.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-            catch { }
-        }
         if (_ownsMutex) _singleInstance?.ReleaseMutex();
         _singleInstance?.Dispose();
         base.OnExit(e);

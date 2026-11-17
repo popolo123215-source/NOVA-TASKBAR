@@ -7,6 +7,7 @@ using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Nova.Core.Contracts;
+using Nova.RendezvousProtocol;
 using Nova.TransferEngine;
 using Nova.TransferProtocol;
 
@@ -18,8 +19,11 @@ RunSync("oversized protocol frame is rejected", TestOversizedFrame);
 RunSync("path traversal and rooted paths are rejected", TestPathSafety);
 RunSync("discovery payload is validated", TestDiscoveryPayload);
 RunSync("one Device ID cannot be trusted with two certificate identities", TestDuplicateDeviceIdentityTrust);
+RunSync("transfer route preference persists across settings reload", TestTransferRoutePreferencePersistence);
 await Run("authenticated streaming transfer, consent and persisted history", TestEndToEndAsync);
-await Run("unknown client certificate is rejected", TestUnknownPeerAsync);
+await Run("Direct VPN loopback TCP/TLS transfer verifies SHA-256", TestDirectVpnAsync);
+await Run("Direct VPN cancellation and disconnect remove partial files", TestDirectVpnInterruptionsAsync);
+await Run("Direct VPN rejects an untrusted client certificate", TestUnknownPeerAsync);
 RunSync("internet protocol control message round trip and bounds", TestTransferControlProtocol);
 RunSync("unsupported internet protocol version is rejected", TestUnsupportedTransferVersion);
 RunSync("internet data block round trip and canonical UUID bytes", TestTransferDataBlock);
@@ -29,6 +33,7 @@ RunSync("internet transfer cancellation control round trip", TestTransferCancell
 await Run("bounded streaming file blocks, durable acknowledgements and atomic receive", TestStreamingFileBlocksAsync);
 await Run("mutually authenticated signaling delivery between independent transfer services", TestSignalingRouteAsync);
 await Run("real WSS rendezvous, trusted presence, signed signaling and temporary TURN credentials", TestInternetRendezvousAsync);
+await Run("authenticated TCP/TLS file relay streams a file and verifies receiver SHA-256", TestTcpTlsFileRelayAsync);
 await Run("native-backed WebRTC file transfer through production signaling and coordinator", TestWebRtcCoordinatorAsync);
 await Run("native WebRTC offer/answer ICE and bidirectional DataChannel payload", WebRtcIntegration.RunAsync);
 
@@ -46,6 +51,22 @@ static void TestTransferControlProtocol()
         TransferProtocolCodec.EncodeControl(TransferControlType.Failure, transferId, new string('x', TransferProtocolCodec.MaximumMessageLength)));
     Expect<InvalidDataException>(() =>
         TransferProtocolCodec.EncodeControl(TransferControlType.Offer, transferId.ToUpperInvariant(), new { Name = "bad-id" }));
+}
+
+static void TestTransferRoutePreferencePersistence()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-route-settings-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var settings = new TransferSettingsStore(root);
+        settings.SetDestinationDirectory(Path.Combine(root, "received"));
+        settings.SetTransportPreference(TransferTransportPreference.DirectVpn);
+        var restored = new TransferSettingsStore(root);
+        Assert(restored.TransportPreference == TransferTransportPreference.DirectVpn &&
+            restored.DestinationDirectory == Path.GetFullPath(Path.Combine(root, "received")),
+            "Transport preference or existing destination setting was not persisted.");
+    }
+    finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
 }
 
 static void TestTransferCancellation()
@@ -224,12 +245,14 @@ static async Task TestInternetRendezvousAsync()
         {
             if (sender == identityA.Device.DeviceId && signal.SessionId == sessionId) receivedAtB.TrySetResult(signal);
         };
-        var payload = new { offer = "signed-real-sdp-frame", sequence = 17 };
+        var payload = new TransferOffer(sessionId, identityA.Device, identityB.Device, "wss-test.bin", 17, null,
+            new string('A', 64), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(3), false);
         await clientA.SendSignalAsync(deviceB, WebRtcSignal.Create(sessionId, "offer", payload), requestTimeout.Token)
             .WaitAsync(TimeSpan.FromSeconds(10), requestTimeout.Token);
         var delivered = await receivedAtB.Task.WaitAsync(TimeSpan.FromSeconds(10), requestTimeout.Token);
         Assert(delivered.Type == "offer" && delivered.SessionId == sessionId &&
-            delivered.Payload.GetProperty("offer").GetString() == payload.offer && delivered.Payload.GetProperty("sequence").GetInt32() == payload.sequence,
+            delivered.Payload.GetProperty("fileName").GetString() == payload.FileName &&
+            delivered.Payload.GetProperty("sizeBytes").GetInt64() == payload.SizeBytes,
             "WSS signaling did not preserve the authenticated device and session payload.");
 
         var reverseId = Guid.NewGuid().ToString("N");
@@ -264,6 +287,156 @@ static async Task TestInternetRendezvousAsync()
         }
         if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
     }
+}
+
+static async Task TestTcpTlsFileRelayAsync()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-file-relay-it-" + Guid.NewGuid().ToString("N"));
+    var certificateDirectory = Path.Combine(root, "certs");
+    Directory.CreateDirectory(certificateDirectory);
+    var portListener = new TcpListener(IPAddress.Loopback, 0);
+    portListener.Start();
+    var port = ((IPEndPoint)portListener.LocalEndpoint).Port;
+    portListener.Stop();
+
+    using var serverKey = RSA.Create(2048);
+    var request = new CertificateRequest("CN=localhost", serverKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    var names = new SubjectAlternativeNameBuilder();
+    names.AddDnsName("localhost");
+    request.CertificateExtensions.Add(names.Build());
+    request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+    using var serverCertificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+    var pfxPath = Path.Combine(certificateDirectory, "relay-test.pfx");
+    const string pfxPassword = "test-only-relay-pfx-password";
+    await File.WriteAllBytesAsync(pfxPath, serverCertificate.Export(X509ContentType.Pfx, pfxPassword));
+    var serverFingerprint = Convert.ToHexString(SHA256.HashData(serverCertificate.RawData));
+
+    var executableDirectory = new DirectoryInfo(AppContext.BaseDirectory);
+    var configuration = executableDirectory.Parent?.Name ?? "Debug";
+    var repositoryRoot = executableDirectory.Parent!.Parent!.Parent!.Parent!.Parent!.FullName;
+    var serviceDll = Path.Combine(repositoryRoot, "src", "Nova.RendezvousService", "bin", configuration, "net10.0", "Nova.RendezvousService.dll");
+    Assert(File.Exists(serviceDll), $"Rendezvous Service build output is missing: {serviceDll}");
+
+    using var process = new Process { StartInfo = new ProcessStartInfo("dotnet")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        WorkingDirectory = repositoryRoot
+    }};
+    process.StartInfo.ArgumentList.Add(serviceDll);
+    process.StartInfo.Environment["NOVA_TLS_PFX_PATH"] = pfxPath;
+    process.StartInfo.Environment["NOVA_TLS_PFX_PASSWORD"] = pfxPassword;
+    process.StartInfo.Environment["NOVA_HTTPS_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    process.StartInfo.Environment["NOVA_STATE_PATH"] = Path.Combine(root, "server-state");
+    process.StartInfo.Environment["NOVA_STUN_URIS"] = "";
+    process.StartInfo.Environment["NOVA_TURN_URIS"] = "";
+    process.StartInfo.Environment["NOVA_TURN_SHARED_SECRET"] = "";
+    var serverOutput = new StringBuilder();
+    var logGate = new object();
+    process.OutputDataReceived += (_, args) => { if (args.Data is not null) lock (logGate) serverOutput.AppendLine(args.Data); };
+    process.ErrorDataReceived += (_, args) => { if (args.Data is not null) lock (logGate) serverOutput.AppendLine(args.Data); };
+
+    try
+    {
+        Assert(process.Start(), "Rendezvous Service process did not start.");
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using var identityA = DeviceIdentity.CreateEphemeral("Relay Sender");
+        using var identityB = DeviceIdentity.CreateEphemeral("Relay Receiver");
+        var destination = Path.Combine(root, "received");
+        await using var a = new LocalTransferService(Path.Combine(root, "device-a"), identity: identityA);
+        await using var b = new LocalTransferService(Path.Combine(root, "device-b"), destinationDirectory: destination, identity: identityB);
+        var deviceA = new DiscoveredDevice(identityA.Device.DeviceId, identityA.Device.DisplayName, IPAddress.None, 0,
+            identityA.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.Internet, true, true);
+        var deviceB = new DiscoveredDevice(identityB.Device.DeviceId, identityB.Device.DisplayName, IPAddress.None, 0,
+            identityB.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.Internet, true, true);
+        a.TrustDevice(deviceB);
+        b.TrustDevice(deviceA);
+        a.Settings.SetTransportPreference(TransferTransportPreference.TcpTlsFileRelay);
+        a.Start(enableDiscovery: false);
+        b.Start(enableDiscovery: false);
+        var endpoint = new Uri($"wss://localhost:{port}/v1/connect");
+        await a.Internet.ConnectAsync(endpoint, serverFingerprint);
+        await WaitUntilAsync(() => a.Internet.Status.State == InternetConnectionState.Connected, process, serverOutput, TimeSpan.FromSeconds(15));
+        await b.Internet.ConnectAsync(endpoint, serverFingerprint);
+        await WaitUntilAsync(() => b.Internet.Status.State == InternetConnectionState.Connected, process, serverOutput, TimeSpan.FromSeconds(15));
+        await WaitUntilAsync(() => a.Internet.Devices.Any(x => x.DeviceId == identityB.Device.DeviceId && x.Online) &&
+            b.Internet.Devices.Any(x => x.DeviceId == identityA.Device.DeviceId && x.Online), process, serverOutput, TimeSpan.FromSeconds(10));
+
+        var incoming = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var senderCompleted = new TaskCompletionSource<WebRtcSessionProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiverCompleted = new TaskCompletionSource<WebRtcSessionProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
+        b.WebRtcIncomingOffer += offer => { offer.Respond(true); incoming.TrySetResult(); };
+        a.WebRtcProgressChanged += progress =>
+        {
+            if (progress.State == WebRtcTransferSessionState.Completed && progress.ConnectionPath == "TCP/TLS File Relay")
+                senderCompleted.TrySetResult(progress);
+        };
+        b.WebRtcProgressChanged += progress =>
+        {
+            if (progress.State == WebRtcTransferSessionState.Completed && progress.ConnectionPath == "TCP/TLS File Relay")
+                receiverCompleted.TrySetResult(progress);
+        };
+
+        const long fileLength = 16L * 1024 * 1024 + 113;
+        var source = Path.Combine(root, "payload.bin");
+        var expectedHash = await CreateRandomFileAsync(source, fileLength);
+        using var transferTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+        var send = a.SendWebRtcFilesAsync(deviceB, [source], transferTimeout.Token);
+        await incoming.Task.WaitAsync(TimeSpan.FromSeconds(15), transferTimeout.Token);
+        await send.WaitAsync(TimeSpan.FromSeconds(45), transferTimeout.Token);
+        var sent = await senderCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), transferTimeout.Token);
+        var received = await receiverCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), transferTimeout.Token);
+        var receivedPath = Path.Combine(destination, "payload.bin");
+        Assert(File.Exists(receivedPath), "TCP/TLS relay did not publish the received file.");
+        var receivedInfo = new FileInfo(receivedPath);
+        await using var receivedFile = new FileStream(receivedPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(receivedFile, transferTimeout.Token));
+        Assert(receivedInfo.Length == fileLength, "TCP/TLS relay output size differs from the source file.");
+        Assert(actualHash == expectedHash && sent.IntegrityVerified && received.IntegrityVerified,
+            "TCP/TLS relay did not confirm the receiver's SHA-256.");
+        Assert(sent.ConnectionPath == "TCP/TLS File Relay" && received.ConnectionPath == "TCP/TLS File Relay",
+            "The completed route was not reported as the TCP/TLS file relay.");
+
+        var unauthorized = new FileRelayTicketRequest(Guid.NewGuid().ToString("N"), identityA.Device.DeviceId);
+        try
+        {
+            await b.Internet.RequestFileRelayTicketAsync(unauthorized.TransferId, unauthorized.PeerDeviceId, transferTimeout.Token);
+            throw new InvalidOperationException("Rendezvous issued a relay ticket for an unauthorized transfer.");
+        }
+        catch (IOException) { }
+    }
+    finally
+    {
+        if (!process.HasExited)
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
+
+static async Task<string> CreateRandomFileAsync(string path, long length)
+{
+    using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+        128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+    var buffer = new byte[128 * 1024];
+    var remaining = length;
+    while (remaining > 0)
+    {
+        var count = (int)Math.Min(buffer.Length, remaining);
+        RandomNumberGenerator.Fill(buffer.AsSpan(0, count));
+        await stream.WriteAsync(buffer.AsMemory(0, count));
+        hash.AppendData(buffer, 0, count);
+        remaining -= count;
+    }
+    return Convert.ToHexString(hash.GetHashAndReset());
 }
 
 static async Task WaitUntilAsync(Func<bool> predicate, Process server, StringBuilder output, TimeSpan timeout)
@@ -319,6 +492,7 @@ static async Task TestWebRtcCoordinatorAsync()
     await File.WriteAllBytesAsync(source, contents);
     var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var diagnostics = new TaskCompletionSource<WebRtcSessionProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
     var rejected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var cancelRequest = new TaskCompletionSource<WebRtcIncomingOfferRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
     var receiverCancelRequest = new TaskCompletionSource<WebRtcIncomingOfferRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -335,6 +509,11 @@ static async Task TestWebRtcCoordinatorAsync()
     };
     a.WebRtcProgressChanged += progress =>
     {
+        if (progress.FileName == "coordinator-payload.bin" &&
+            progress.State == WebRtcTransferSessionState.Transferring &&
+            progress.DataChannelState == "open" &&
+            progress.ConnectionPath == "direct")
+            diagnostics.TrySetResult(progress);
         if (progress.State == WebRtcTransferSessionState.Completed) received.TrySetResult();
         if (progress.State == WebRtcTransferSessionState.Rejected && progress.FileName == "reject.bin") rejected.TrySetResult();
         if (progress.State == WebRtcTransferSessionState.Cancelled && progress.FileName == "cancel.bin") cancelledAtSender.TrySetResult();
@@ -350,6 +529,12 @@ static async Task TestWebRtcCoordinatorAsync()
     await accepted.Task.WaitAsync(TimeSpan.FromSeconds(20), timeout.Token);
     await send.WaitAsync(TimeSpan.FromSeconds(75), timeout.Token);
     await received.Task.WaitAsync(TimeSpan.FromSeconds(5), timeout.Token);
+    var connectionDiagnostics = await diagnostics.Task.WaitAsync(TimeSpan.FromSeconds(5), timeout.Token);
+    Assert(connectionDiagnostics.IceState is "connected" or "completed" &&
+           connectionDiagnostics.PeerConnectionState == "connected" &&
+           connectionDiagnostics.LocalIceCandidates > 0 && connectionDiagnostics.RemoteIceCandidates > 0 &&
+           connectionDiagnostics.IceServerCount == 0 && !connectionDiagnostics.TurnConfigured,
+        "WebRTC progress did not report the actual ICE, candidate, DataChannel, and configured-server state.");
     var finalPath = Path.Combine(destination, "coordinator-payload.bin");
     Assert(File.Exists(finalPath), "Accepted WebRTC transfer did not produce a final file.");
     var actual = await File.ReadAllBytesAsync(finalPath, timeout.Token);
@@ -641,6 +826,169 @@ static async Task TestUnknownPeerAsync()
     Assert(rejected, "Сервер не отклонил клиентский сертификат с неизвестным fingerprint.");
     await host.DisposeAsync();
     Directory.Delete(root, true);
+}
+
+static async Task TestDirectVpnAsync()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-direct-vpn-" + Guid.NewGuid().ToString("N"));
+    var destination = Path.Combine(root, "received");
+    Directory.CreateDirectory(destination);
+    try
+    {
+        using var identityA = DeviceIdentity.CreateEphemeral("Direct VPN Sender");
+        using var identityB = DeviceIdentity.CreateEphemeral("Direct VPN Receiver");
+        await using var a = new LocalTransferService(Path.Combine(root, "device-a"), identity: identityA);
+        await using var b = new LocalTransferService(Path.Combine(root, "device-b"), destinationDirectory: destination, identity: identityB);
+        var deviceA = new DiscoveredDevice(identityA.Device.DeviceId, identityA.Device.DisplayName, IPAddress.None, 0,
+            identityA.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.None, false);
+        var deviceB = new DiscoveredDevice(identityB.Device.DeviceId, identityB.Device.DisplayName, IPAddress.None, 0,
+            identityB.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.None, false);
+        a.TrustDevice(deviceB);
+        b.TrustDevice(deviceA);
+        var receivedDirectOffer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        b.IncomingOffer += request =>
+        {
+            if (request.Offer.TransportPreference == TransferTransportPreference.DirectVpn)
+                receivedDirectOffer.TrySetResult();
+            request.Respond(true);
+        };
+        a.Start(enableDiscovery: false);
+        b.Start(enableDiscovery: false);
+
+        var savedPeer = a.GetAvailableDevices().Single(x => x.DeviceId == identityB.Device.DeviceId);
+        Assert(savedPeer.Source == DeviceDiscoverySource.None && !savedPeer.IsOnline,
+            "An offline mutually trusted Direct VPN contact was not available for manual addressing.");
+        var peer = savedPeer with { Address = IPAddress.Loopback, Port = b.TcpPort, IsOnline = true };
+        var ipv6Rejected = false;
+        try
+        {
+            await a.SendDirectVpnFilesAsync(peer with { Address = IPAddress.IPv6Loopback }, [], CancellationToken.None);
+        }
+        catch (ArgumentException) { ipv6Rejected = true; }
+        Assert(ipv6Rejected, "Direct VPN accepted an IPv6 endpoint despite its IPv4-only contract.");
+        var source = Path.Combine(root, "direct-vpn.bin");
+        var expectedHash = await CreateRandomFileAsync(source, 5L * 1024 * 1024 + 97);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await a.SendDirectVpnFilesAsync(peer, [source], timeout.Token).WaitAsync(timeout.Token);
+        await receivedDirectOffer.Task.WaitAsync(TimeSpan.FromSeconds(5), timeout.Token);
+
+        var receivedPath = Path.Combine(destination, "direct-vpn.bin");
+        Assert(File.Exists(receivedPath), "Direct VPN did not save the received file.");
+        await using var receivedFile = new FileStream(receivedPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(receivedFile, timeout.Token));
+        Assert(actualHash == expectedHash, "Direct VPN loopback file SHA-256 differs from the source.");
+        Assert(a.History.GetRecent().Any(x => x.FileName == "direct-vpn.bin" && x.State == TransferState.Completed),
+            "Direct VPN completion was not recorded in sender history.");
+        Assert(b.History.GetRecent().Any(x => x.FileName == "direct-vpn.bin" && x.State == TransferState.Completed),
+            "Direct VPN completion was not recorded in receiver history.");
+    }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
+
+static async Task TestDirectVpnInterruptionsAsync()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-direct-vpn-interrupt-" + Guid.NewGuid().ToString("N"));
+    var destination = Path.Combine(root, "received");
+    Directory.CreateDirectory(destination);
+    try
+    {
+        using var identityA = DeviceIdentity.CreateEphemeral("Direct VPN Sender");
+        using var identityB = DeviceIdentity.CreateEphemeral("Direct VPN Receiver");
+        await using var a = new LocalTransferService(Path.Combine(root, "device-a"), identity: identityA);
+        await using var b = new LocalTransferService(Path.Combine(root, "device-b"), destinationDirectory: destination, identity: identityB);
+        var deviceA = new DiscoveredDevice(identityA.Device.DeviceId, identityA.Device.DisplayName, IPAddress.Loopback, 1,
+            identityA.Fingerprint, DateTimeOffset.UtcNow, true);
+        var deviceB = new DiscoveredDevice(identityB.Device.DeviceId, identityB.Device.DisplayName, IPAddress.Loopback, 1,
+            identityB.Fingerprint, DateTimeOffset.UtcNow, true);
+        a.TrustDevice(deviceB);
+        b.TrustDevice(deviceA);
+        b.IncomingOffer += request => request.Respond(true);
+        a.Start(enableDiscovery: false);
+        b.Start(enableDiscovery: false);
+        var peer = deviceB with { Address = IPAddress.Loopback, Port = b.TcpPort };
+
+        var cancelFile = Path.Combine(root, "cancel.bin");
+        await CreateRandomFileAsync(cancelFile, 32L * 1024 * 1024);
+        using var cancellation = new CancellationTokenSource();
+        var cancelStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelReceiveFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        a.ProgressChanged += progress =>
+        {
+            if (progress.FileName == "cancel.bin" && progress.State == TransferState.Transferring)
+            {
+                cancelStarted.TrySetResult();
+                cancellation.Cancel();
+            }
+        };
+        b.ProgressChanged += progress =>
+        {
+            if (progress.FileName == "cancel.bin" && progress.State == TransferState.Failed)
+                cancelReceiveFailed.TrySetResult();
+        };
+
+        var cancelSend = a.SendDirectVpnFilesAsync(peer, [cancelFile], cancellation.Token);
+        try
+        {
+            await cancelSend.WaitAsync(TimeSpan.FromSeconds(15));
+            throw new InvalidOperationException("Direct VPN sender completed after cancellation.");
+        }
+        catch (OperationCanceledException) { }
+        await cancelStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancelReceiveFailed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert(a.History.GetRecent().Any(x => x.FileName == "cancel.bin" && x.State == TransferState.Cancelled),
+            "Direct VPN cancellation was not recorded.");
+        Assert(!File.Exists(Path.Combine(destination, "cancel.bin")) &&
+            !Directory.EnumerateFiles(destination, "*.part").Any(),
+            "Direct VPN cancellation left a partial destination file.");
+
+        var disconnectFile = Path.Combine(root, "disconnect.bin");
+        await CreateRandomFileAsync(disconnectFile, 32L * 1024 * 1024);
+        var disconnectStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disconnectStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopping = 0;
+        b.ProgressChanged += progress =>
+        {
+            if (progress.FileName == "disconnect.bin" && progress.State == TransferState.Transferring &&
+                Interlocked.Exchange(ref stopping, 1) == 0)
+            {
+                _ = Task.Run(async () =>
+                {
+                    disconnectStarted.TrySetResult();
+                    try
+                    {
+                        await b.DisposeAsync();
+                        disconnectStopped.TrySetResult();
+                    }
+                    catch (Exception ex) { disconnectStopped.TrySetException(ex); }
+                });
+            }
+        };
+
+        var disconnected = false;
+        try
+        {
+            await a.SendDirectVpnFilesAsync(peer, [disconnectFile]).WaitAsync(TimeSpan.FromSeconds(15));
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            disconnected = true;
+        }
+        Assert(disconnected, "Direct VPN sender did not detect the receiver disconnect.");
+        await disconnectStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await disconnectStopped.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert(!File.Exists(Path.Combine(destination, "disconnect.bin")) &&
+            !Directory.EnumerateFiles(destination, "*.part").Any(),
+            "Direct VPN disconnect left a partial destination file.");
+    }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
 }
 
 static void Assert(bool condition, string message)

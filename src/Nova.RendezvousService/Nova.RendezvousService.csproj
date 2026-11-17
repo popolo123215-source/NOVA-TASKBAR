@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Nova.Core.Contracts\Nova.Core.Contracts.csproj" />
     <ProjectReference Include="..\Nova.RendezvousProtocol\Nova.RendezvousProtocol.csproj" />
+    <ProjectReference Include="..\Nova.TransferProtocol\Nova.TransferProtocol.csproj" />
   </ItemGroup>
 </Project>

@@ -7,6 +7,7 @@ using System.Threading.Channels;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.RateLimiting;
+using Nova.Core.Contracts;
 using Nova.RendezvousProtocol;
 
 var statePath = Environment.GetEnvironmentVariable("NOVA_STATE_PATH") ?? "/var/lib/nova-rendezvous";
@@ -14,12 +15,25 @@ var pfxPath = Environment.GetEnvironmentVariable("NOVA_TLS_PFX_PATH");
 var pfxPassword = Environment.GetEnvironmentVariable("NOVA_TLS_PFX_PASSWORD");
 var connectsPerIpPerMinute = int.TryParse(Environment.GetEnvironmentVariable("NOVA_CONNECTS_PER_IP_PER_MINUTE"), out var connectionRate)
     ? Math.Clamp(connectionRate, 1, 10_000) : 30;
-if (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath) || string.IsNullOrWhiteSpace(pfxPassword))
+var localHttp = string.Equals(Environment.GetEnvironmentVariable("NOVA_LOCAL_HTTP"), "true", StringComparison.OrdinalIgnoreCase);
+if (!localHttp && (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath) || string.IsNullOrWhiteSpace(pfxPassword)))
     throw new InvalidOperationException("NOVA_TLS_PFX_PATH and NOVA_TLS_PFX_PASSWORD must point to the production WSS certificate.");
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(int.TryParse(Environment.GetEnvironmentVariable("NOVA_HTTPS_PORT"), out var port) ? port : 8443,
-    listen => listen.UseHttps(pfxPath, pfxPassword)));
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (localHttp)
+    {
+        var localPort = int.TryParse(Environment.GetEnvironmentVariable("NOVA_LOCAL_HTTP_PORT"), out var configuredLocalPort) ? configuredLocalPort : 8080;
+        if (localPort is < 1 or > 65535) throw new InvalidOperationException("NOVA_LOCAL_HTTP_PORT must be between 1 and 65535.");
+        options.Listen(System.Net.IPAddress.Loopback, localPort);
+    }
+    else
+    {
+        var httpsPort = int.TryParse(Environment.GetEnvironmentVariable("NOVA_HTTPS_PORT"), out var configuredHttpsPort) ? configuredHttpsPort : 8443;
+        options.ListenAnyIP(httpsPort, listen => listen.UseHttps(pfxPath!, pfxPassword!));
+    }
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
@@ -32,14 +46,37 @@ builder.Services.AddRateLimiter(options =>
         }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
-builder.Services.AddSingleton(new RendezvousRegistry(statePath));
+builder.Services.AddSingleton<FileRelayHub>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<FileRelayHub>());
+builder.Services.AddSingleton(provider => new RendezvousRegistry(statePath, provider.GetRequiredService<FileRelayHub>()));
 builder.Services.AddSingleton<IceCredentialIssuer>();
 var app = builder.Build();
 app.UseRateLimiter();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20), KeepAliveTimeout = TimeSpan.FromSeconds(10) });
-app.MapGet("/healthz", () => Results.Text("ok"));
 app.Map("/v1/connect", HandleSocketAsync);
+app.Map("/v1/relay", HandleFileRelayAsync);
 await app.RunAsync();
+
+static async Task HandleFileRelayAsync(HttpContext context)
+{
+    if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+    try
+    {
+        await context.RequestServices.GetRequiredService<FileRelayHub>()
+            .HandleWebSocketAsync(socket, context.RequestAborted);
+    }
+    catch (Exception ex) when (ex is WebSocketException or IOException or InvalidDataException or
+        AuthenticationException or CryptographicException or JsonException or OperationCanceledException or TimeoutException)
+    {
+        Console.Error.WriteLine($"[NOVA File Relay] Connection rejected or closed: {ex.Message}");
+        if (socket.State == WebSocketState.Open)
+        {
+            try { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Relay connection rejected", CancellationToken.None); }
+            catch (WebSocketException) { }
+        }
+    }
+}
 
 static async Task HandleSocketAsync(HttpContext context)
 {
@@ -104,6 +141,11 @@ static async Task HandleSocketAsync(HttpContext context)
                         break;
                     case "ice-credentials":
                         await connection.SendAsync(RendezvousFrame.Create("ice-credentials", issuer.Issue(connection.DeviceId), frame.RequestId), context.RequestAborted);
+                        break;
+                    case "relay-ticket":
+                        var relayRequest = frame.ReadPayload<FileRelayTicketRequest>();
+                        var relayTicket = registry.IssueRelayTicket(connection, relayRequest);
+                        await connection.SendAsync(RendezvousFrame.Create("relay-ticket", relayTicket, frame.RequestId), context.RequestAborted);
                         break;
                     case "ping":
                         await connection.SendAsync(RendezvousFrame.Create("pong", new { at = DateTimeOffset.UtcNow }, frame.RequestId), context.RequestAborted);
@@ -182,10 +224,12 @@ sealed class RendezvousRegistry
     private readonly Dictionary<string, Queue<PendingSignal>> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _seenSignalNonces = new(StringComparer.Ordinal);
     private readonly string _pinPath;
+    private readonly FileRelayHub _fileRelay;
     private readonly int _maxOnlineDevices = int.TryParse(Environment.GetEnvironmentVariable("NOVA_MAX_ONLINE_DEVICES"), out var maxOnline)
         ? Math.Clamp(maxOnline, 1, 100_000) : 5000;
-    public RendezvousRegistry(string statePath)
+    public RendezvousRegistry(string statePath, FileRelayHub fileRelay)
     {
+        _fileRelay = fileRelay;
         Directory.CreateDirectory(statePath);
         _pinPath = Path.Combine(statePath, "device-pins.json");
         if (File.Exists(_pinPath))
@@ -284,6 +328,37 @@ sealed class RendezvousRegistry
                 throw new AuthenticationException("Target identity does not match the sender's trusted fingerprint.");
             var receiverHasSender = _online.TryGetValue(request.TargetDeviceId, out recipient) &&
                 recipient.Contacts.Any(x => x.DeviceId == sender.DeviceId && x.Fingerprint == sender.Fingerprint) && recipient.Fingerprint == senderContact.Fingerprint;
+
+            switch (request.Signal.Type)
+            {
+                case "offer":
+                    if (request.Signal.Payload.ValueKind != JsonValueKind.Object)
+                        throw new InvalidDataException("Transfer offer payload must be an object.");
+                    var offer = request.Signal.Payload.Deserialize<TransferOffer>(RendezvousJson.Options) ??
+                        throw new InvalidDataException("Transfer offer payload is empty.");
+                    if (offer.Sender is null || offer.Recipient is null ||
+                        offer.TransferId != request.Signal.SessionId || offer.Sender.DeviceId != sender.DeviceId ||
+                        offer.Recipient.DeviceId != request.TargetDeviceId || offer.Sender.DisplayName != sender.DisplayName ||
+                        offer.Recipient.DisplayName != senderContact.DisplayName)
+                        throw new AuthenticationException("Transfer offer participants do not match the authenticated signaling route.");
+                    _fileRelay.RegisterOffer(offer, sender.Fingerprint, sender.CertificateDer);
+                    break;
+                case "accept":
+                    if (request.Signal.Payload.ValueKind != JsonValueKind.Object ||
+                        !request.Signal.Payload.TryGetProperty("accepted", out var accepted) ||
+                        accepted.ValueKind != JsonValueKind.True)
+                        throw new InvalidDataException("Only an explicit accepted transfer can authorize the relay.");
+                    _fileRelay.ApproveOffer(request.Signal.SessionId, request.TargetDeviceId, sender.DeviceId,
+                        sender.Fingerprint, sender.CertificateDer);
+                    break;
+                case "reject":
+                case "cancel":
+                case "closed":
+                case "error":
+                    _fileRelay.CancelOffer(request.Signal.SessionId, sender.DeviceId, request.TargetDeviceId);
+                    break;
+            }
+
             if (!receiverHasSender)
             {
                 if (request.Signal.Type is not ("offer" or "accept" or "reject" or "cancel" or "closed" or "error"))
@@ -297,6 +372,25 @@ sealed class RendezvousRegistry
         }
         if (!queued) await recipient!.SendAsync(RendezvousFrame.Create("signal", new RendezvousSignalDelivery(id, sender.DeviceId, request.Signal)), token);
         await sender.SendAsync(RendezvousFrame.Create("signal-ack", new { accepted = true, queued }, requestId), token);
+    }
+
+    public FileRelayTicket IssueRelayTicket(RendezvousConnection requester, FileRelayTicketRequest request)
+    {
+        if (request is null || !Guid.TryParseExact(request.TransferId, "N", out _) ||
+            !Guid.TryParseExact(request.PeerDeviceId, "N", out _) || request.PeerDeviceId == requester.DeviceId)
+            throw new InvalidDataException("TCP/TLS relay ticket request is invalid.");
+        lock (_gate)
+        {
+            if (!_online.TryGetValue(requester.DeviceId, out var current) || current != requester ||
+                !_online.TryGetValue(request.PeerDeviceId, out var peer))
+                throw new AuthenticationException("Both transfer participants must be connected to NOVA Network.");
+            var contact = requester.Contacts.FirstOrDefault(x => x.DeviceId == peer.DeviceId);
+            if (contact is null || contact.Fingerprint != peer.Fingerprint ||
+                !peer.Contacts.Any(x => x.DeviceId == requester.DeviceId && x.Fingerprint == requester.Fingerprint))
+                throw new AuthenticationException("Relay participants are not mutually trusted.");
+            return _fileRelay.IssueTicket(request.TransferId, requester.DeviceId, peer.DeviceId,
+                requester.Fingerprint, requester.CertificateDer);
+        }
     }
 
     public void AcknowledgeDelivery(string receiverId, string messageId)
@@ -386,6 +480,7 @@ sealed class RendezvousConnection(string deviceId, string displayName, string fi
     public string DeviceId { get; } = deviceId;
     public string DisplayName { get; } = displayName;
     public string Fingerprint { get; } = fingerprint;
+    public string CertificateDer { get; } = certificateDer;
     public X509Certificate2 Certificate { get; } = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(certificateDer));
     public IReadOnlyList<RendezvousContact> Contacts { get { lock (_contactsGate) return _contacts; } }
     public void UpdateContacts(IReadOnlyList<RendezvousContact> contacts)

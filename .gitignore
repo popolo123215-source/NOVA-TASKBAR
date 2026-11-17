@@ -1,4 +1,7 @@
 bin/
+!/infra/internet/coturn/bin/
+!/infra/internet/coturn/bin/*.dll
+!/infra/internet/coturn/bin/turnserver.exe
 obj/
 .vs/
 .idea/
@@ -9,3 +12,7 @@ obj/
 /vcpkg_installed/
 /infra/internet/.env
 /infra/internet/certs/
+/infra/internet/runtime/
+/infra/internet/logs/
+/infra/internet/state/
+/infra/internet/turnserver.conf
