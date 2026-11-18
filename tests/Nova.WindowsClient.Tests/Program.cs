@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using CommunityToolkit.WinUI.Notifications;
+using Windows.UI.Notifications;
 using Nova.WindowsClient;
 using Nova.WindowsClient.Services;
 
@@ -34,12 +35,111 @@ if (args.Contains("--windows-toast-smoke", StringComparer.Ordinal))
         true,
         false,
         null));
+    var generalToastTag = $"smoke-{Guid.NewGuid():N}";
+    new WindowsToastNotificationService().ShowNotification(
+        "NOVA · проверка",
+        "Проверка уведомления центра NOVA.",
+        generalToastTag);
 
     var testTag = testId[..16];
-    var found = ToastNotificationManagerCompat.History.GetHistory()
+    var history = ToastNotificationManagerCompat.History.GetHistory();
+    var found = history
         .Any(notification => notification.Tag == testTag && notification.Group == "NOVA-Train");
     Require(found, "Windows did not record the NOVA test toast in notification history.");
-    Console.WriteLine("PASS  Windows Toast was accepted and appears in notification history.");
+    Require(history.Any(notification => notification.Tag == generalToastTag &&
+        notification.Group == "NOVA-Notification"),
+        "Windows did not record the notification-center test toast in notification history.");
+    Console.WriteLine("PASS  Train and notification-center Windows Toasts appear in notification history.");
+    return 0;
+}
+
+if (args.Contains("--notification-center-smoke", StringComparer.Ordinal))
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"NOVA-Notification-Smoke-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var center = new NotificationCenterService(new NotificationCenterStore(directory));
+        center.Initialize();
+        var dueAt = DateTimeOffset.UtcNow.AddSeconds(3);
+        var reminder = center.AddReminder("NOVA · проверка планировщика", "Панель не требуется для доставки.", dueAt, DateTimeOffset.UtcNow);
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        var delivered = center.ProcessDue(
+            DateTimeOffset.UtcNow,
+            new WindowsToastNotificationService().ShowNotification);
+        var found = ToastNotificationManager.History.GetHistory("NOVA.TaskBar")
+            .Any(notification => notification.Tag == reminder.Id &&
+                notification.Group == "NOVA-Notification");
+        Require(delivered == 1 && found,
+            "The notification-center scheduler did not deliver a real Windows Toast.");
+        Console.WriteLine("PASS  A persisted due reminder was delivered through the notification-center scheduler as a real Windows Toast.");
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+    return 0;
+}
+
+if (args.Contains("--productivity-notification-smoke", StringComparer.Ordinal))
+{
+    var smokeArgumentIndex = Array.IndexOf(args, "--productivity-notification-smoke");
+    if (args.Length <= smokeArgumentIndex + 1 || !File.Exists(args[smokeArgumentIndex + 1]))
+        throw new ArgumentException("Pass the actual Nova.TaskBar.exe path after --productivity-notification-smoke.");
+    var appExecutablePath = args[smokeArgumentIndex + 1];
+    string? failure = null;
+    var smokeThread = new Thread(() =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"NOVA-Productivity-Smoke-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            WindowsToastRegistration.Initialize(appExecutablePath);
+            var now = DateTimeOffset.UtcNow;
+            var service = new ProductivityService(new ProductivityStore(directory));
+            service.Initialize();
+            var reminder = service.CreateReminder(
+                new ParsedSmartReminder(
+                    "NOVA · проверка Productivity",
+                    now.AddSeconds(1),
+                    ProductivityRecurrence.None,
+                    TimeZoneInfo.Local.Id),
+                "Планировщик работает без открытого окна.",
+                now);
+            var center = new NotificationCenterService(new NotificationCenterStore(directory));
+            center.Initialize();
+            var historyCountBefore = ToastNotificationManager.History.GetHistory("NOVA.TaskBar").Count;
+            Thread.Sleep(TimeSpan.FromSeconds(2));
+            var delivered = service.ProcessDue(
+                DateTimeOffset.UtcNow,
+                (title, body, tag) =>
+                {
+                    center.AddSystemEvent(title, body, DateTimeOffset.UtcNow);
+                    new WindowsToastNotificationService().ShowNotification(title, body, tag);
+                });
+            var found = ToastNotificationManager.History.GetHistory("NOVA.TaskBar").Count > historyCountBefore;
+            Require(delivered == 1 && found && center.Entries.Any(entry => entry.Kind == NotificationEntryKind.SystemEvent),
+                "Productivity reminder was not delivered as a real Windows Toast and saved to local history.");
+            Console.WriteLine("PASS  A persisted Productivity reminder generated a Windows Toast and notification history entry without creating a panel window.");
+        }
+        catch (Exception ex)
+        {
+            failure = ex.ToString();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    })
+    {
+        IsBackground = true,
+        Name = "NOVA Productivity Toast smoke"
+    };
+    smokeThread.SetApartmentState(ApartmentState.STA);
+    smokeThread.Start();
+    smokeThread.Join();
+    if (failure is not null)
+        throw new InvalidOperationException(failure);
     return 0;
 }
 
@@ -59,6 +159,15 @@ Run("production schedule resource loads and returns real listed departures", Tes
 Run("the schedule picker exposes every departure for its date", TestAllTrainsForDate);
 Run("reminder presets and custom minutes are validated", TestReminderLeadOptionsAndValidation);
 Run("reminders persist, update, disable, re-enable, and delete", TestReminderPersistenceAndManagement);
+Run("notification center persists reminders and records system events", TestNotificationCenterPersistence);
+Run("notification center delivers simultaneous reminders once and skips stale reminders", TestNotificationCenterDelivery);
+Run("productivity tasks, notes, calendar links and local memory persist and update", TestProductivityPersistenceAndManagement);
+Run("productivity schema v0 migrates atomically to the current document", TestProductivitySchemaMigration);
+Run("multiple timers and task deadlines restore and notify exactly once", TestProductivityTimerAndTaskDeadlineDelivery);
+Run("failed Productivity deliveries stay pending and retry once", TestProductivityDeliveryRetry);
+Run("smart reminders parse Russian natural language and recurring schedules", TestSmartReminderParsingAndDelivery);
+Run("calendar recurrence handles month boundaries and daylight-saving gaps", TestProductivityCalendarTimeZones);
+Run("quick actions and workflows require confirmation for risky operations", TestProductivityQuickActions);
 Run("a due reminder is delivered once, including after restart", TestReminderIsDeliveredOnce);
 Run("simultaneous reminders are delivered independently", TestSimultaneousReminders);
 Run("missed and departed reminders never fire late", TestMissedAndDepartedReminders);
@@ -74,6 +183,8 @@ Run("widget icon size stays within its DIP range and resizes navigation buttons"
 Run("screen text cleanup preserves paragraphs and merges wrapped lines", TestScreenTextCleanup);
 await RunAsync("screen translation rejects empty and oversized input before sending it", TestTranslationLimits);
 Run("default Windows output volume is readable", TestSystemMasterVolume);
+await RunAsync("Windows Audio enumerates active endpoints and sessions", TestAudioMixerSnapshot);
+Run("system metrics read live memory, disks and Windows counters", TestSystemMetrics);
 await RunAsync("Windows OCR recognizes an in-memory text image", TestWindowsOcr);
 await RunAsync("WASAPI loopback capture starts without recording audio", TestLiveLoopback);
 Run("analysis throughput stays within the realtime budget", TestThroughput);
@@ -422,6 +533,418 @@ void TestReminderPersistenceAndManagement()
     });
 }
 
+void TestNotificationCenterPersistence()
+{
+    WithTempReminderStore(directory =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var center = new NotificationCenterService(new NotificationCenterStore(directory));
+        center.Initialize();
+        var reminder = center.AddReminder(
+            "Проверка встречи",
+            "Взять документы",
+            now.AddHours(2),
+            now);
+        center.AddSystemEvent("Входящий файл", "Пользователь предлагает документ.", now);
+
+        var restarted = new NotificationCenterService(new NotificationCenterStore(directory));
+        restarted.Initialize();
+        Require(restarted.Entries.Count == 2 &&
+            restarted.Entries.Any(entry => entry.Id == reminder.Id &&
+                entry.Kind == NotificationEntryKind.Reminder &&
+                entry.Enabled &&
+                entry.DueAt == reminder.DueAt) &&
+            restarted.Entries.Any(entry => entry.Kind == NotificationEntryKind.SystemEvent),
+            "notification history or reminder did not survive reloading the local store");
+        var eventEntry = restarted.Entries.Single(entry => entry.Kind == NotificationEntryKind.SystemEvent);
+        Require(restarted.MarkRead(eventEntry.Id) && restarted.UnreadCount == 1,
+            "a stored system event could not be marked read");
+        Require(restarted.SetReminderEnabled(reminder.Id, false, now) == NotificationReminderUpdateResult.Updated &&
+            !restarted.Entries.Single(entry => entry.Id == reminder.Id).Enabled,
+            "a general reminder could not be disabled");
+        Require(restarted.Delete(reminder.Id) &&
+            !restarted.Entries.Any(entry => entry.Id == reminder.Id),
+            "a general reminder could not be deleted");
+    });
+}
+
+void TestNotificationCenterDelivery()
+{
+    WithTempReminderStore(directory =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var dueAt = now.AddSeconds(5);
+        var center = new NotificationCenterService(new NotificationCenterStore(directory));
+        center.Initialize();
+        center.AddReminder("Первое", "Текст 1", dueAt, now);
+        center.AddReminder("Второе", "Текст 2", dueAt, now);
+        var restarted = new NotificationCenterService(new NotificationCenterStore(directory));
+        restarted.Initialize();
+        var delivered = new List<string>();
+        Require(restarted.ProcessDue(dueAt, (title, _, _) => delivered.Add(title)) == 2 &&
+            delivered.Order().SequenceEqual(new[] { "Второе", "Первое" }.Order()),
+            "simultaneous reminders were not independently delivered");
+        var afterRestart = new NotificationCenterService(new NotificationCenterStore(directory));
+        afterRestart.Initialize();
+        Require(afterRestart.ProcessDue(dueAt.AddSeconds(20), (_, _, _) => delivered.Add("duplicate")) == 0 &&
+            delivered.Count == 2,
+            "a delivered reminder was repeated after restarting the notification center");
+
+        var laterNow = DateTimeOffset.UtcNow;
+        var missedDue = laterNow.AddSeconds(5);
+        afterRestart.AddReminder("Просроченное", "", missedDue, laterNow);
+        Require(afterRestart.ProcessDue(missedDue.AddMinutes(2), (_, _, _) => delivered.Add("late")) == 0 &&
+            delivered.Count == 2 &&
+            afterRestart.Entries.Single(entry => entry.Title == "Просроченное").Enabled == false,
+            "a stale notification was sent instead of being disabled");
+    });
+}
+
+void TestProductivityPersistenceAndManagement()
+{
+    WithTempReminderStore(directory =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        var task = service.CreateTask(
+            "Подготовить отчёт",
+            "Собрать локальные данные",
+            "Работа",
+            ProductivityPriority.Normal,
+            now.AddDays(1),
+            true,
+            now);
+        var looseTask = service.CreateTask(
+            "Проверить результаты",
+            "",
+            "Работа",
+            ProductivityPriority.Low,
+            null,
+            false,
+            now);
+        var note = service.CreateNote("Встреча", "Взять блокнот", "Работа", true, now);
+        var memory = service.CreateMemory(
+            ProductivityMemoryKind.Preference,
+            "Предпочитаю утренние встречи",
+            now);
+        var calendarEvent = service.CreateCalendarEvent(
+            "Обсудить отчёт",
+            "Комната 2",
+            now.AddDays(2),
+            15,
+            ProductivityRecurrence.Weekly,
+            TimeZoneInfo.Local.Id,
+            task.Id,
+            now);
+
+        service.UpdateTask(
+            task.Id,
+            "Подготовить квартальный отчёт",
+            "Сверить итоговые цифры",
+            "Работа",
+            ProductivityPriority.High,
+            now.AddDays(3),
+            false,
+            true,
+            now.AddMinutes(1));
+        Require(service.SetTaskCompleted(looseTask.Id, true, now.AddMinutes(1)),
+            "a task could not be marked complete");
+        service.UpdateNote(note.Id, "Встреча с командой", "Взять блокнот и план", "Работа", true, now.AddMinutes(2));
+        service.UpdateMemory(
+            memory.Id,
+            ProductivityMemoryKind.Context,
+            "Утренние встречи проходят быстрее",
+            now.AddMinutes(2));
+
+        var restarted = new ProductivityService(new ProductivityStore(directory));
+        restarted.Initialize();
+        Require(restarted.IsAvailable &&
+            restarted.Tasks.Single(item => item.Id == task.Id).Priority == ProductivityPriority.High &&
+            restarted.Tasks.Single(item => item.Id == looseTask.Id).IsCompleted &&
+            restarted.Notes.Single().Title == "Встреча с командой" &&
+            restarted.Memories.Single().Text == "Утренние встречи проходят быстрее",
+            "tasks, notes, categories, priority, pinning, completion, or local memory did not survive restart");
+        Require(restarted.SearchContext("утренние").Any(item => item.Source == "Локальный контекст") &&
+            restarted.SearchContext("квартальный").Any(item => item.Source == "Незавершённая задача") &&
+            restarted.SearchContext("план").Any(item => item.Source == "Заметка"),
+            "context search did not include stored memory, tasks and notes");
+        Require(restarted.CalendarEvents.Single().RelatedTaskId == task.Id,
+            "the calendar event lost its linked task");
+        Require(restarted.DeleteTask(task.Id) &&
+            restarted.CalendarEvents.Single().RelatedTaskId is null,
+            "deleting a linked task left a dangling calendar reference");
+        Require(restarted.DeleteNote(note.Id) && restarted.DeleteMemory(memory.Id),
+            "a note or user-controlled memory entry could not be deleted");
+        var afterDelete = new ProductivityService(new ProductivityStore(directory));
+        afterDelete.Initialize();
+        Require(afterDelete.Notes.Count == 0 && afterDelete.Memories.Count == 0 &&
+            afterDelete.Tasks.Single().Id == looseTask.Id,
+            "deletions were not persisted");
+    });
+}
+
+void TestProductivitySchemaMigration()
+{
+    WithTempReminderStore(directory =>
+    {
+        var file = Path.Combine(directory, "productivity.json");
+        File.WriteAllText(file, "{\"Format\":\"NOVA-PRODUCTIVITY\",\"Version\":0}");
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        using var migrated = JsonDocument.Parse(File.ReadAllText(file));
+        Require(service.IsAvailable &&
+            migrated.RootElement.GetProperty("Version").GetInt32() == 1,
+            "the prior empty productivity schema was not upgraded to version 1");
+    });
+}
+
+void TestProductivityTimerAndTaskDeadlineDelivery()
+{
+    WithTempReminderStore(directory =>
+    {
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        var now = DateTimeOffset.UtcNow;
+        var countdown = service.CreateTimer("Проверка", ProductivityTimerKind.Countdown, TimeSpan.FromSeconds(30), now);
+        service.StartTimer(countdown.Id, now);
+        var stopwatch = service.CreateTimer("Секундомер", ProductivityTimerKind.Stopwatch, TimeSpan.Zero, now);
+        service.StartTimer(stopwatch.Id, now);
+        var task = service.CreateTask(
+            "Сдать файл",
+            "",
+            "Работа",
+            ProductivityPriority.High,
+            now.AddSeconds(20),
+            false,
+            now);
+
+        var restarted = new ProductivityService(new ProductivityStore(directory));
+        restarted.Initialize();
+        var restoredCountdown = restarted.GetTimerSnapshots(now.AddSeconds(10)).Single(item => item.Timer.Id == countdown.Id);
+        var restoredStopwatch = restarted.GetTimerSnapshots(now.AddSeconds(10)).Single(item => item.Timer.Id == stopwatch.Id);
+        Require(Math.Abs(restoredCountdown.Remaining.TotalSeconds - 20) < 0.1 &&
+            Math.Abs(restoredStopwatch.Elapsed.TotalSeconds - 10) < 0.1,
+            "running countdown or stopwatch elapsed time was not reconstructed after restart");
+        var delivered = new List<string>();
+        Require(restarted.ProcessDue(now.AddSeconds(20), (title, body, _) => delivered.Add($"{title}:{body}")) == 1 &&
+            delivered.Single().Contains("Сдать файл", StringComparison.Ordinal),
+            "the task deadline was not sent through the productivity scheduler");
+        Require(restarted.ProcessDue(now.AddSeconds(31), (title, body, _) => delivered.Add($"{title}:{body}")) == 1 &&
+            delivered.Any(item => item.Contains("Проверка", StringComparison.Ordinal)),
+            "the countdown did not complete and deliver its notification");
+        var afterRestart = new ProductivityService(new ProductivityStore(directory));
+        afterRestart.Initialize();
+        Require(afterRestart.ProcessDue(now.AddSeconds(40), (_, _, _) => delivered.Add("duplicate")) == 0 &&
+            delivered.Count == 2 &&
+            afterRestart.GetTimerSnapshots(now.AddSeconds(40)).Single(item => item.Timer.Id == countdown.Id).Timer.IsCompleted,
+            "a task deadline or countdown notification repeated after another restart");
+
+        afterRestart.PauseTimer(stopwatch.Id, now.AddSeconds(40));
+        var paused = afterRestart.GetTimerSnapshots(now.AddDays(1)).Single(item => item.Timer.Id == stopwatch.Id);
+        Require(!paused.IsRunning && Math.Abs(paused.Elapsed.TotalSeconds - 40) < 0.1,
+            "a paused stopwatch did not retain its elapsed time");
+        afterRestart.StartTimer(stopwatch.Id, now.AddDays(1));
+        var resumed = afterRestart.GetTimerSnapshots(now.AddDays(1).AddSeconds(5))
+            .Single(item => item.Timer.Id == stopwatch.Id);
+        Require(Math.Abs(resumed.Elapsed.TotalSeconds - 45) < 0.1,
+            "the stopwatch did not continue from its persisted elapsed value");
+    });
+}
+
+void TestProductivityDeliveryRetry()
+{
+    WithTempReminderStore(directory =>
+    {
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        var now = DateTimeOffset.UtcNow;
+        var dueReminder = service.CreateReminder(
+            new ParsedSmartReminder("Повторная доставка", now.AddSeconds(1), ProductivityRecurrence.None, TimeZoneInfo.Local.Id),
+            "",
+            now);
+
+        Require(service.ProcessDue(now.AddSeconds(2), (_, _, _) => throw new IOException("Toast недоступен.")) == 0 &&
+            service.Reminders.Single(item => item.Id == dueReminder.Id) is
+            {
+                IsEnabled: true,
+                LastTriggeredAt: null,
+                LastOutcome: null
+            },
+            "a failed Windows notification was recorded as sent instead of remaining retryable");
+
+        var delivered = 0;
+        Require(service.ProcessDue(now.AddSeconds(3), (_, _, _) => delivered++) == 1 &&
+            delivered == 1 &&
+            service.ProcessDue(now.AddSeconds(4), (_, _, _) => delivered++) == 0,
+            "a retried notification was not delivered exactly once");
+    });
+}
+
+void TestSmartReminderParsingAndDelivery()
+{
+    WithTempReminderStore(directory =>
+    {
+        var zone = LocalTrainScheduleService.GetMoscowTimeZone()
+            ?? throw new InvalidOperationException("Europe/Moscow time zone is unavailable.");
+        var date = new DateOnly(2026, 11, 18);
+        var now = MoscowUtc(date, new TimeOnly(7, 0));
+        Require(SmartReminderParser.TryParse(
+                "завтра в 09:15 позвонить маме",
+                now,
+                zone,
+                out var parsedTomorrow,
+                out var error) &&
+            parsedTomorrow!.Title == "позвонить маме" &&
+            TimeZoneInfo.ConvertTime(parsedTomorrow.DueAt, zone).Date == date.AddDays(1).ToDateTime(TimeOnly.MinValue).Date,
+            $"natural-language next-day reminder failed: {error}");
+        Require(SmartReminderParser.TryParse(
+                "каждый день в 08:00 витамины",
+                now,
+                zone,
+                out var parsedDaily,
+                out _) &&
+            parsedDaily!.Recurrence == ProductivityRecurrence.Daily &&
+            parsedDaily.Title == "витамины",
+            "daily recurrence or its reminder title was parsed incorrectly");
+        Require(SmartReminderParser.TryParse(
+                "через 20 минут проверить почту",
+                now,
+                zone,
+                out var parsedRelative,
+                out _) &&
+            parsedRelative!.Title == "проверить почту" &&
+            parsedRelative.DueAt == now.AddMinutes(20),
+            "relative time was not parsed or calculated correctly");
+        Require(!SmartReminderParser.TryParse("позвонить маме", now, zone, out _, out _),
+            "a phrase without a time was accepted as a scheduled reminder");
+
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        var dueReminder = service.CreateReminder(
+            new ParsedSmartReminder("Проверить доставку", now.AddSeconds(5), ProductivityRecurrence.None, zone.Id),
+            string.Empty,
+            now);
+        var repeating = service.CreateReminder(
+            new ParsedSmartReminder("Витамины", now.AddSeconds(5), ProductivityRecurrence.Daily, zone.Id),
+            string.Empty,
+            now);
+        var task = service.CreateTask("Подготовить встречу", "", "", ProductivityPriority.Normal, null, false, now);
+        service.CreateCalendarEvent(
+            "Встреча",
+            "Переговорная",
+            now.AddMinutes(5),
+            5,
+            ProductivityRecurrence.Weekly,
+            zone.Id,
+            task.Id,
+            now);
+
+        var delivered = new List<string>();
+        Require(service.ProcessDue(now.AddSeconds(6), (title, _, id) => delivered.Add($"{title}:{id}")) == 3,
+            "a reminder and its linked calendar event were not delivered together");
+        Require(delivered.Select(item => item.Split(':', 2)[1]).Distinct(StringComparer.Ordinal).Count() == 3 &&
+            service.Reminders.Single(item => item.Id == repeating.Id).IsEnabled &&
+            service.Reminders.Single(item => item.Id == repeating.Id).DueAt > now.AddSeconds(6) &&
+            !service.Reminders.Single(item => item.Id == dueReminder.Id).IsEnabled,
+            "coincident event/reminder notifications duplicated or recurrence state was not advanced");
+        var restarted = new ProductivityService(new ProductivityStore(directory));
+        restarted.Initialize();
+        Require(restarted.ProcessDue(now.AddSeconds(7), (_, _, _) => delivered.Add("duplicate")) == 0,
+            "a reminder or calendar notification repeated after restart");
+
+        var movable = restarted.CreateReminder(
+            new ParsedSmartReminder("Перенос", now.AddDays(1), ProductivityRecurrence.None, zone.Id),
+            string.Empty,
+            now);
+        restarted.SnoozeReminder(movable.Id, TimeSpan.FromMinutes(10), now);
+        Require(restarted.Reminders.Single(item => item.Id == movable.Id).DueAt == now.AddMinutes(10),
+            "a reminder could not be postponed");
+        restarted.SetReminderEnabled(movable.Id, false, now);
+        Require(!restarted.Reminders.Single(item => item.Id == movable.Id).IsEnabled &&
+            restarted.DeleteReminder(movable.Id),
+            "a reminder could not be disabled or deleted");
+    });
+}
+
+void TestProductivityCalendarTimeZones()
+{
+    var monthEndZone = TimeZoneInfo.Utc;
+    var monthEnd = new DateTimeOffset(2026, 1, 31, 10, 0, 0, TimeSpan.Zero);
+    var nextMonthly = ProductivityService.GetNextOccurrence(monthEnd, ProductivityRecurrence.Monthly, monthEndZone);
+    Require(nextMonthly == new DateTimeOffset(2026, 2, 28, 10, 0, 0, TimeSpan.Zero),
+        "monthly recurrence did not clamp to the final day of a shorter month");
+
+    var pacific = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+    var beforeGap = new DateTimeOffset(2026, 3, 7, 2, 30, 0, TimeSpan.FromHours(-8));
+    var afterGap = ProductivityService.GetNextOccurrence(beforeGap, ProductivityRecurrence.Daily, pacific);
+    var localAfterGap = TimeZoneInfo.ConvertTime(afterGap, pacific);
+    Require(localAfterGap.Date == new DateTime(2026, 3, 8) &&
+        localAfterGap.TimeOfDay >= TimeSpan.FromHours(3),
+        "recurrence did not move a nonexistent daylight-saving local time to the next valid time");
+}
+
+void TestProductivityQuickActions()
+{
+    WithTempReminderStore(directory =>
+    {
+        var actionPath = Path.Combine(directory, "document.txt");
+        File.WriteAllText(actionPath, "local test file");
+        var service = new ProductivityService(new ProductivityStore(directory));
+        service.Initialize();
+        var openFile = service.CreateQuickAction(
+            "Открыть файл",
+            ProductivityQuickActionKind.OpenPath,
+            actionPath,
+            DateTimeOffset.UtcNow);
+        var lockAction = service.CreateQuickAction(
+            "Блокировка",
+            ProductivityQuickActionKind.LockWorkstation,
+            string.Empty,
+            DateTimeOffset.UtcNow);
+        Require(!ProductivityQuickActionRunner.RequiresConfirmation(openFile) &&
+            ProductivityQuickActionRunner.RequiresConfirmation(lockAction),
+            "confirmation requirements did not distinguish safe file opening from system actions");
+        var rejected = false;
+        try
+        {
+            ProductivityQuickActionRunner.Execute(lockAction, confirmationAccepted: false);
+        }
+        catch (InvalidOperationException)
+        {
+            rejected = true;
+        }
+        Require(rejected, "a system action ran without explicit confirmation");
+
+        var workflow = service.CreateWorkflow("Открыть и заблокировать", [openFile.Id, lockAction.Id], DateTimeOffset.UtcNow);
+        Require(service.GetWorkflowActions(workflow.Id).Select(item => item.Id)
+                .SequenceEqual(new[] { openFile.Id, lockAction.Id }),
+            "the saved user scenario did not preserve its step order");
+        var blockedDelete = false;
+        try
+        {
+            service.DeleteQuickAction(openFile.Id);
+        }
+        catch (InvalidOperationException)
+        {
+            blockedDelete = true;
+        }
+        Require(blockedDelete, "deleting an action broke a stored workflow reference");
+        var invalidOrderRejected = false;
+        try
+        {
+            service.CreateWorkflow("Неверный порядок", [lockAction.Id, openFile.Id], DateTimeOffset.UtcNow);
+        }
+        catch (ArgumentException)
+        {
+            invalidOrderRejected = true;
+        }
+        Require(invalidOrderRejected, "a system-lock action was allowed before later workflow steps");
+        Require(service.DeleteWorkflow(workflow.Id) && service.DeleteQuickAction(openFile.Id),
+            "a workflow and its now-unreferenced action could not be deleted");
+    });
+}
+
 void TestReminderIsDeliveredOnce()
 {
     WithTempReminderStore(directory =>
@@ -665,6 +1188,56 @@ void TestSystemMasterVolume()
     var level = new SystemMasterVolumeService().ReadLevel();
     Require(float.IsFinite(level) && level is >= 0 and <= 1,
         $"Windows returned an invalid master volume value ({level})");
+}
+
+async Task TestAudioMixerSnapshot()
+{
+    using var mixer = new AudioMixerService();
+    var snapshot = await mixer.RefreshAsync();
+    if (snapshot.Error is { Length: > 0 } error)
+    {
+        Console.WriteLine($"      Windows Audio reported unavailable: {error}");
+        return;
+    }
+
+    Require(snapshot.Outputs.All(device => !string.IsNullOrWhiteSpace(device.Id) &&
+        !string.IsNullOrWhiteSpace(device.Name)) &&
+        snapshot.Inputs.All(device => !string.IsNullOrWhiteSpace(device.Id) &&
+        !string.IsNullOrWhiteSpace(device.Name)),
+        "Windows Audio returned an endpoint without its device identity");
+    Require(snapshot.Sessions.All(session => float.IsFinite(session.Volume) &&
+        session.Volume is >= 0 and <= 1 &&
+        !string.IsNullOrWhiteSpace(session.Id) &&
+        !string.IsNullOrWhiteSpace(session.Name)),
+        "Windows Audio returned an invalid active-session snapshot");
+    if (snapshot.Sessions.FirstOrDefault() is { } session)
+    {
+        await mixer.SetSessionVolumeAsync(session.DeviceId, session.SessionId, session.Volume);
+        await mixer.SetSessionMuteAsync(session.DeviceId, session.SessionId, session.IsMuted);
+    }
+    Console.WriteLine($"      endpoints: {snapshot.Outputs.Count} output / {snapshot.Inputs.Count} input; active sessions: {snapshot.Sessions.Count}");
+}
+
+void TestSystemMetrics()
+{
+    using var metrics = new SystemStatsService();
+    var snapshot = metrics.Sample();
+    Require(double.IsFinite(snapshot.RamTotalGb) &&
+        double.IsFinite(snapshot.RamUsedGb) &&
+        snapshot.RamTotalGb > 0 &&
+        snapshot.RamUsedGb >= 0 &&
+        snapshot.RamUsedGb <= snapshot.RamTotalGb,
+        "Windows returned invalid physical-memory totals");
+    Require(snapshot.CpuPercent is null or >= 0 and <= 100 &&
+        snapshot.Gpu3DPercent is null or >= 0 and <= 100 &&
+        snapshot.DiskReadBytesPerSecond is null or >= 0 &&
+        snapshot.DiskWriteBytesPerSecond is null or >= 0,
+        "a native counter returned an invalid metric value");
+    Require(snapshot.DiskSpaces.All(disk => disk.TotalBytes > 0 &&
+        disk.AvailableBytes >= 0 &&
+        disk.AvailableBytes <= disk.TotalBytes),
+        "Windows returned invalid free-space information");
+    Console.WriteLine($"      RAM {snapshot.RamUsedGb:0.0}/{snapshot.RamTotalGb:0.0} GB; disks: {snapshot.DiskSpaces.Count}; CPU/GPU sensors: {snapshot.CpuTemperatureCelsius?.ToString("0.0", CultureInfo.InvariantCulture) ?? "n/a"}/{snapshot.GpuTemperatureCelsius?.ToString("0.0", CultureInfo.InvariantCulture) ?? "n/a"} °C");
 }
 
 void TestObsAuthentication()

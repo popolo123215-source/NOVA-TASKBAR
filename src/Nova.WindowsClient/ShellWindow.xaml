@@ -284,7 +284,36 @@
                       </Style>
                     </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
-                      <DataTemplate><TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13"/></DataTemplate>
+                      <DataTemplate>
+                        <TextBlock x:Name="LyricLineText" Text="{Binding Text}" TextWrapping="Wrap">
+                          <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                              <Setter Property="FontSize" Value="13"/>
+                              <Setter Property="Foreground" Value="{StaticResource MutedInk}"/>
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                  <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+                                  <Setter Property="FontWeight" Value="SemiBold"/>
+                                  <DataTrigger.EnterActions>
+                                    <BeginStoryboard>
+                                      <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="FontSize" To="15" Duration="0:0:0.18"/>
+                                      </Storyboard>
+                                    </BeginStoryboard>
+                                  </DataTrigger.EnterActions>
+                                  <DataTrigger.ExitActions>
+                                    <BeginStoryboard>
+                                      <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="FontSize" To="13" Duration="0:0:0.18"/>
+                                      </Storyboard>
+                                    </BeginStoryboard>
+                                  </DataTrigger.ExitActions>
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </TextBlock.Style>
+                        </TextBlock>
+                      </DataTemplate>
                     </ListBox.ItemTemplate>
                   </ListBox>
                   <ScrollViewer x:Name="PlainLyricsScroll" Grid.Row="1" MinHeight="72" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -391,22 +420,345 @@
               <Button x:Name="IncyStatusButton" Style="{StaticResource SmallButton}" Content="Открыть INCY" Click="IncyStatus_Click"/>
             </WrapPanel>
           </StackPanel>
-          <StackPanel x:Name="TimerContent" Visibility="Collapsed" VerticalAlignment="Center">
-            <TextBlock Text="ТАЙМЕР" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
-            <TextBlock x:Name="TimerDisplayText" Text="05:00" Foreground="{StaticResource Ink}" FontSize="54" FontWeight="Light" Margin="0,4,0,2"/>
-            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-              <Button Style="{StaticResource SmallButton}" Content="Обратный отсчёт" Click="TimerCountdownMode_Click" Margin="0,0,6,0"/>
-              <Button Style="{StaticResource SmallButton}" Content="Секундомер" Click="TimerStopwatchMode_Click"/>
+          <StackPanel x:Name="ProductivityContent" Visibility="Collapsed">
+            <TextBlock Text="NOVA PRODUCTIVITY" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
+            <TextBlock Text="Личное рабочее пространство" Foreground="{StaticResource Ink}" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,3"/>
+            <TextBlock Text="Данные хранятся локально. Напоминания и таймеры работают, пока NOVA запущена, даже если панель скрыта." Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,8">
+              <Button Style="{StaticResource SmallButton}" Content="Задачи" Tag="Tasks" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Заметки" Tag="Notes" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Таймеры" Tag="Timers" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Напоминания" Tag="Reminders" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Календарь" Tag="Calendar" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Память" Tag="Memory" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+              <Button Style="{StaticResource SmallButton}" Content="Действия" Tag="Actions" Click="ProductivitySection_Click" Margin="0,0,5,4" Padding="8,5"/>
+            </WrapPanel>
+            <TextBlock x:Name="ProductivityStatusText" Text="Локальное хранилище готово." Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+            <StackPanel x:Name="ProductivityTasksSection">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Задача · автосохранение" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="ProductivityTaskTitleBox" ToolTip="Название задачи" TextChanged="ProductivityTaskForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <TextBox x:Name="ProductivityTaskDetailsBox" ToolTip="Описание (необязательно)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="42" MaxHeight="72" TextChanged="ProductivityTaskForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,5,0,0"/>
+                  <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="112"/><ColumnDefinition Width="*"/><ColumnDefinition Width="66"/></Grid.ColumnDefinitions>
+                    <TextBox x:Name="ProductivityTaskCategoryBox" ToolTip="Категория" TextChanged="ProductivityTaskForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="6,4" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="ProductivityTaskPriorityCombo" Grid.Column="1" SelectionChanged="ProductivityTaskForm_SelectionChanged" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="4,3" Margin="0,0,4,0">
+                      <ComboBoxItem Content="Обычный" Tag="Normal" IsSelected="True"/>
+                      <ComboBoxItem Content="Высокий" Tag="High"/>
+                      <ComboBoxItem Content="Низкий" Tag="Low"/>
+                    </ComboBox>
+                    <DatePicker x:Name="ProductivityTaskDueDatePicker" Grid.Column="2" SelectedDateChanged="ProductivityTaskForm_DateChanged" Background="#16FFFFFF" Foreground="{StaticResource Ink}" Margin="0,0,4,0"/>
+                    <TextBox x:Name="ProductivityTaskDueTimeBox" Grid.Column="3" ToolTip="Срок, ЧЧ:ММ" TextChanged="ProductivityTaskForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="5,4"/>
+                  </Grid>
+                  <WrapPanel Margin="0,4,0,0">
+                    <CheckBox x:Name="ProductivityTaskPinnedCheckBox" Content="Закрепить" Foreground="{StaticResource PanelInk}" Click="ProductivityTaskForm_Changed" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Сохранить" Click="ProductivityTaskSave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Очистить" Click="ProductivityTaskClear_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <TextBox x:Name="ProductivityTaskSearchBox" ToolTip="Поиск по задачам" TextChanged="ProductivityTaskSearch_TextChanged" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,0,0,7"/>
+              <ItemsControl x:Name="ProductivityTaskList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding PriorityText}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding Details}" Foreground="{StaticResource PanelInk}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        <TextBlock Text="{Binding MetaText}" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="{Binding CompletionText}" Click="ProductivityTaskToggle_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityTaskEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityTaskDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </StackPanel>
-            <StackPanel x:Name="TimerCountdownOptions" Orientation="Horizontal" Margin="0,10,0,0">
-              <TextBlock Text="Минуты" Foreground="{StaticResource MutedInk}" VerticalAlignment="Center" Margin="0,0,7,0"/>
-              <TextBox x:Name="TimerMinutesBox" Text="5" Width="70" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,4"/>
+
+            <StackPanel x:Name="ProductivityNotesSection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Заметка · автосохранение" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="ProductivityNoteTitleBox" ToolTip="Название заметки" TextChanged="ProductivityNoteForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <TextBox x:Name="ProductivityNoteContentBox" ToolTip="Текст заметки" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="90" MaxHeight="180" VerticalScrollBarVisibility="Auto" TextChanged="ProductivityNoteForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,5,0,0"/>
+                  <WrapPanel Margin="0,5,0,0">
+                    <TextBox x:Name="ProductivityNoteCategoryBox" ToolTip="Категория" Width="140" TextChanged="ProductivityNoteForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="6,4" Margin="0,0,6,0"/>
+                    <CheckBox x:Name="ProductivityNotePinnedCheckBox" Content="Закрепить" Foreground="{StaticResource PanelInk}" Click="ProductivityNoteForm_Changed" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Сохранить" Click="ProductivityNoteSave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Очистить" Click="ProductivityNoteClear_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <TextBox x:Name="ProductivityNoteSearchBox" ToolTip="Поиск по заметкам" TextChanged="ProductivityNoteSearch_TextChanged" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,0,0,7"/>
+              <ItemsControl x:Name="ProductivityNoteList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding Content}" Foreground="{StaticResource PanelInk}" FontSize="10" TextWrapping="Wrap" MaxHeight="80" Margin="0,3,0,0"/>
+                        <TextBlock Text="{Binding MetaText}" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="0,3,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityNoteEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityNoteDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-              <Button x:Name="TimerStartPauseButton" Style="{StaticResource SmallButton}" Content="Запустить" Click="TimerStartPause_Click" Margin="0,0,6,0"/>
-              <Button Style="{StaticResource SmallButton}" Content="Сбросить" Click="TimerReset_Click"/>
+
+            <StackPanel x:Name="ProductivityTimersSection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Новый таймер или секундомер" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="136"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+                    <TextBox x:Name="ProductivityTimerNameBox" Grid.Column="0" ToolTip="Название" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,0,5,0"/>
+                    <ComboBox x:Name="ProductivityTimerKindCombo" Grid.Column="1" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="4,3" Margin="0,0,5,0" SelectionChanged="ProductivityTimerKind_SelectionChanged">
+                      <ComboBoxItem Content="Обратный отсчёт" Tag="Countdown" IsSelected="True"/>
+                      <ComboBoxItem Content="Секундомер" Tag="Stopwatch"/>
+                    </ComboBox>
+                    <TextBox x:Name="ProductivityTimerMinutesBox" Grid.Column="2" Text="5" ToolTip="Минуты (1–10080)" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="6,5"/>
+                  </Grid>
+                  <Button Style="{StaticResource SmallButton}" Content="Создать" Click="ProductivityTimerCreate_Click" HorizontalAlignment="Left" Margin="0,6,0,0" Padding="8,4"/>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ProductivityTimerList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding StateText}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding Display}" Foreground="{StaticResource Ink}" FontSize="25" FontWeight="Light" Margin="0,2,0,0"/>
+                        <WrapPanel Margin="0,4,0,0">
+                          <Button Tag="{Binding}" Content="{Binding ToggleText}" Click="ProductivityTimerToggle_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Сбросить" Click="ProductivityTimerReset_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityTimerDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </StackPanel>
-            <TextBlock x:Name="TimerStatusText" Text="Готов" Foreground="{StaticResource MutedInk}" FontSize="10" Margin="0,9,0,0"/>
+
+            <StackPanel x:Name="ProductivityRemindersSection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Умное напоминание" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBlock Text="Примеры: «завтра в 09:15 позвонить маме», «через 20 минут проверить почту», «каждый день в 08:00 витамины»." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                  <TextBox x:Name="ProductivityReminderInputBox" ToolTip="Введите напоминание обычным текстом" TextChanged="ProductivityReminderInput_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <TextBlock x:Name="ProductivityReminderPreviewText" Text="" Foreground="{StaticResource PanelInk}" FontSize="9" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                  <WrapPanel Margin="0,5,0,0">
+                    <Button Style="{StaticResource SmallButton}" Content="Запланировать" Click="ProductivityReminderSave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Отмена редактирования" Click="ProductivityReminderCancelEdit_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ProductivityReminderList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding DateText}" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,3,0,0"/>
+                        <TextBlock Text="{Binding Body}" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Перенести +10 мин" Click="ProductivityReminderSnooze_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityReminderEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="{Binding ToggleText}" Click="ProductivityReminderToggle_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityReminderDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+
+            <StackPanel x:Name="ProductivityCalendarSection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Локальное событие календаря" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="ProductivityCalendarTitleBox" ToolTip="Название события" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <TextBox x:Name="ProductivityCalendarDetailsBox" ToolTip="Описание" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,5,0,0"/>
+                  <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/><ColumnDefinition Width="130"/><ColumnDefinition Width="60"/></Grid.ColumnDefinitions>
+                    <DatePicker x:Name="ProductivityCalendarDatePicker" Background="#16FFFFFF" Foreground="{StaticResource Ink}" Margin="0,0,4,0"/>
+                    <TextBox x:Name="ProductivityCalendarTimeBox" Grid.Column="1" Text="09:00" ToolTip="ЧЧ:ММ" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="5,4" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="ProductivityCalendarRecurrenceCombo" Grid.Column="2" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="4,3" Margin="0,0,4,0">
+                      <ComboBoxItem Content="Не повторять" Tag="None" IsSelected="True"/>
+                      <ComboBoxItem Content="Каждый день" Tag="Daily"/>
+                      <ComboBoxItem Content="Каждую неделю" Tag="Weekly"/>
+                      <ComboBoxItem Content="Каждый месяц" Tag="Monthly"/>
+                    </ComboBox>
+                    <TextBox x:Name="ProductivityCalendarLeadBox" Grid.Column="3" Text="10" ToolTip="Минут до события" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="5,4"/>
+                  </Grid>
+                  <ComboBox x:Name="ProductivityCalendarTaskCombo" DisplayMemberPath="Title" SelectedValuePath="Id" ToolTip="Связанная задача (необязательно)" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="5,4" Margin="0,5,0,0"/>
+                  <WrapPanel Margin="0,5,0,0">
+                    <Button Style="{StaticResource SmallButton}" Content="Сохранить событие" Click="ProductivityCalendarSave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Очистить" Click="ProductivityCalendarClear_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ProductivityCalendarList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding DateText}" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,3,0,0"/>
+                        <TextBlock Text="{Binding MetaText}" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityCalendarEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="{Binding ToggleText}" Click="ProductivityCalendarToggle_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityCalendarDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+
+            <StackPanel x:Name="ProductivityMemorySection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Локальная память NOVA" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBlock Text="Сохраняются только введённые вами записи. Задачи и заметки доступны здесь для поиска; фонового сбора нет." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                  <ComboBox x:Name="ProductivityMemoryKindCombo" SelectionChanged="ProductivityMemoryKind_Changed" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="5,4" Margin="0,6,0,0">
+                    <ComboBoxItem Content="Контекст" Tag="Context" IsSelected="True"/>
+                    <ComboBoxItem Content="Предпочтение" Tag="Preference"/>
+                    <ComboBoxItem Content="Незавершённое действие" Tag="OpenAction"/>
+                  </ComboBox>
+                  <TextBox x:Name="ProductivityMemoryTextBox" ToolTip="Запись, которую вы хотите сохранить" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48" MaxHeight="100" TextChanged="ProductivityMemoryForm_Changed" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,5,0,0"/>
+                  <WrapPanel Margin="0,5,0,0">
+                    <Button Style="{StaticResource SmallButton}" Content="Сохранить запись" Click="ProductivityMemorySave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Очистить" Click="ProductivityMemoryClear_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <TextBox x:Name="ProductivityMemorySearchBox" ToolTip="Поиск по задачам, заметкам и памяти" TextChanged="ProductivityMemorySearch_TextChanged" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,0,0,7"/>
+              <ItemsControl x:Name="ProductivityMemoryList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding Source}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding Excerpt}" Foreground="{StaticResource PanelInk}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityMemoryEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityMemoryDelete_Click" IsEnabled="{Binding CanDelete}" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+
+            <StackPanel x:Name="ProductivityActionsSection" Visibility="Collapsed">
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,9">
+                <StackPanel>
+                  <TextBlock Text="Быстрое действие" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="ProductivityActionNameBox" ToolTip="Название действия" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <ComboBox x:Name="ProductivityActionKindCombo" SelectionChanged="ProductivityActionKind_SelectionChanged" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="5,4" Margin="0,5,0,0">
+                    <ComboBoxItem Content="Открыть файл или папку" Tag="OpenPath" IsSelected="True"/>
+                    <ComboBoxItem Content="Запустить EXE или ярлык" Tag="LaunchApplication"/>
+                    <ComboBoxItem Content="Заблокировать Windows" Tag="LockWorkstation"/>
+                    <ComboBoxItem Content="Спящий режим Windows" Tag="Sleep"/>
+                  </ComboBox>
+                  <DockPanel x:Name="ProductivityActionTargetPanel" Margin="0,5,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                      <Button Style="{StaticResource SmallButton}" Content="Файл…" Click="ProductivityActionBrowse_Click" Padding="7,4" Margin="5,0,0,0"/>
+                      <Button x:Name="ProductivityActionBrowseFolderButton" Style="{StaticResource SmallButton}" Content="Папка…" Click="ProductivityActionBrowseFolder_Click" Padding="7,4" Margin="5,0,0,0"/>
+                    </StackPanel>
+                    <TextBox x:Name="ProductivityActionTargetBox" ToolTip="Абсолютный локальный путь; аргументы команд не поддерживаются" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5"/>
+                  </DockPanel>
+                  <Button Style="{StaticResource SmallButton}" Content="Сохранить действие" Click="ProductivityActionSave_Click" HorizontalAlignment="Left" Margin="0,5,0,0" Padding="8,4"/>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ProductivityActionList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding Description}" Foreground="{StaticResource PanelInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Запустить" Click="ProductivityActionRun_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityActionEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityActionDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,6,0,9">
+                <StackPanel>
+                  <TextBlock Text="Пользовательский сценарий" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="ProductivityWorkflowNameBox" ToolTip="Название сценария" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,6,0,0"/>
+                  <DockPanel Margin="0,5,0,0">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Content="Добавить шаг" Click="ProductivityWorkflowAddStep_Click" Padding="7,4" Margin="5,0,0,0"/>
+                    <ComboBox x:Name="ProductivityWorkflowActionCombo" DisplayMemberPath="Name" SelectedValuePath="Id" Background="#1EFFFFFF" Foreground="{StaticResource Ink}" Padding="5,4"/>
+                  </DockPanel>
+                  <ItemsControl x:Name="ProductivityWorkflowDraftList" Margin="0,5,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <DockPanel Margin="0,2">
+                          <Button DockPanel.Dock="Right" Tag="{Binding}" Content="Убрать" Click="ProductivityWorkflowRemoveStep_Click" Style="{StaticResource SmallButton}" Padding="6,3"/>
+                          <TextBlock Text="{Binding Name}" Foreground="{StaticResource PanelInk}" FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        </DockPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <WrapPanel Margin="0,5,0,0">
+                    <Button Style="{StaticResource SmallButton}" Content="Сохранить сценарий" Click="ProductivityWorkflowSave_Click" Padding="8,4" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource SmallButton}" Content="Очистить" Click="ProductivityWorkflowClear_Click" Padding="8,4"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ProductivityWorkflowList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="10" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                      <StackPanel>
+                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding StepsText}" Foreground="{StaticResource PanelInk}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        <WrapPanel Margin="0,5,0,0">
+                          <Button Tag="{Binding}" Content="Запустить сценарий" Click="ProductivityWorkflowRun_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Изменить" Click="ProductivityWorkflowEdit_Click" Style="{StaticResource SmallButton}" Padding="7,4" Margin="0,0,5,0"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="ProductivityWorkflowDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
           </StackPanel>
           <Grid x:Name="ScheduleContent" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -557,30 +909,128 @@
               <TextBlock Text="Только локальный TXT · без онлайн-обновлений, задержек и отмен." Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel>
           </Grid>
-          <StackPanel x:Name="SystemContent" Visibility="Collapsed" VerticalAlignment="Center">
+          <StackPanel x:Name="SystemContent" Visibility="Collapsed">
             <TextBlock Text="МОНИТОРИНГ" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
-            <TextBlock Text="Использование ресурсов" Foreground="{StaticResource Ink}" FontSize="23" FontWeight="SemiBold" Margin="0,7,0,14"/>
-            <Grid>
-              <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <TextBlock Text="CPU" Foreground="{StaticResource PanelInk}" VerticalAlignment="Center"/>
-              <ProgressBar x:Name="CpuUsageBar" Grid.Column="1" Height="7" Maximum="100" VerticalAlignment="Center"/>
-              <TextBlock x:Name="CpuUsageText" Grid.Column="2" Text="—" Foreground="{StaticResource Ink}" Width="55" TextAlignment="Right"/>
-            </Grid>
-            <Grid Margin="0,12,0,0">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <TextBlock Text="GPU · 3D" Foreground="{StaticResource PanelInk}" VerticalAlignment="Center"/>
-              <ProgressBar x:Name="GpuUsageBar" Grid.Column="1" Height="7" Maximum="100" VerticalAlignment="Center"/>
-              <TextBlock x:Name="GpuUsageText" Grid.Column="2" Text="—" Foreground="{StaticResource Ink}" Width="55" TextAlignment="Right"/>
-            </Grid>
-            <Grid Margin="0,12,0,0">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <TextBlock Text="RAM" Foreground="{StaticResource PanelInk}" VerticalAlignment="Center"/>
-              <ProgressBar x:Name="RamUsageBar" Grid.Column="1" Height="7" Maximum="100" VerticalAlignment="Center"/>
-              <TextBlock x:Name="RamUsageText" Grid.Column="2" Text="—" Foreground="{StaticResource Ink}" Width="120" TextAlignment="Right"/>
-            </Grid>
-            <TextBlock x:Name="SystemStatusText" Text="Обновление раз в 2 секунды." Foreground="{StaticResource MutedInk}" FontSize="10" Margin="0,14,0,0"/>
-            <TextBlock Text="Настройка игрового оверлея и набора показателей находится в Settings → Gaming." Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,14,0,0"/>
+            <TextBlock Text="Система в реальном времени" Foreground="{StaticResource Ink}" FontSize="22" FontWeight="SemiBold" Margin="0,7,0,14"/>
+            <Border x:Name="MonitorCpuPanel" CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+              <StackPanel>
+                <DockPanel><TextBlock Text="CPU" Foreground="{StaticResource PanelInk}" FontWeight="SemiBold"/><TextBlock x:Name="CpuUsageText" DockPanel.Dock="Right" Text="н/д" Foreground="{StaticResource Ink}"/></DockPanel>
+                <ProgressBar x:Name="CpuUsageBar" Height="6" Maximum="100" Margin="0,7,0,0"/>
+                <Viewbox Height="24" Stretch="Fill" Margin="0,4,0,0"><Canvas Width="120" Height="24"><Polyline x:Name="CpuGraphLine" Stroke="#FFF0A84B" StrokeThickness="1.5"/></Canvas></Viewbox>
+                <TextBlock x:Name="CpuDetailsText" Text="Частота: н/д · температура: н/д" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border x:Name="MonitorGpuPanel" CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+              <StackPanel>
+                <DockPanel><TextBlock Text="GPU · 3D" Foreground="{StaticResource PanelInk}" FontWeight="SemiBold"/><TextBlock x:Name="GpuUsageText" DockPanel.Dock="Right" Text="н/д" Foreground="{StaticResource Ink}"/></DockPanel>
+                <ProgressBar x:Name="GpuUsageBar" Height="6" Maximum="100" Margin="0,7,0,0"/>
+                <Viewbox Height="24" Stretch="Fill" Margin="0,4,0,0"><Canvas Width="120" Height="24"><Polyline x:Name="GpuGraphLine" Stroke="#FFB49BFF" StrokeThickness="1.5"/></Canvas></Viewbox>
+                <TextBlock x:Name="GpuDetailsText" Text="Частота: н/д · температура: н/д · VRAM: н/д" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border x:Name="MonitorRamPanel" CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+              <StackPanel>
+                <DockPanel><TextBlock Text="RAM" Foreground="{StaticResource PanelInk}" FontWeight="SemiBold"/><TextBlock x:Name="RamUsageText" DockPanel.Dock="Right" Text="н/д" Foreground="{StaticResource Ink}"/></DockPanel>
+                <ProgressBar x:Name="RamUsageBar" Height="6" Maximum="100" Margin="0,7,0,0"/>
+                <Viewbox Height="24" Stretch="Fill" Margin="0,4,0,0"><Canvas Width="120" Height="24"><Polyline x:Name="RamGraphLine" Stroke="#FF63D7B3" StrokeThickness="1.5"/></Canvas></Viewbox>
+                <TextBlock x:Name="RamAvailableText" Text="Доступно: н/д" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border x:Name="MonitorNetworkPanel" CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+              <StackPanel>
+                <DockPanel><TextBlock Text="СЕТЬ" Foreground="{StaticResource PanelInk}" FontWeight="SemiBold"/><TextBlock x:Name="NetworkUsageText" DockPanel.Dock="Right" Text="↓ н/д · ↑ н/д" Foreground="{StaticResource Ink}" FontSize="10"/></DockPanel>
+                <Viewbox Height="24" Stretch="Fill" Margin="0,5,0,0"><Canvas Width="120" Height="24"><Polyline x:Name="NetworkGraphLine" Stroke="#FF63C9FF" StrokeThickness="1.5"/></Canvas></Viewbox>
+              </StackPanel>
+            </Border>
+            <Border x:Name="MonitorDiskPanel" CornerRadius="12" Background="#18FFFFFF" Padding="10">
+              <StackPanel>
+                <DockPanel><TextBlock Text="ДИСКИ" Foreground="{StaticResource PanelInk}" FontWeight="SemiBold"/><TextBlock x:Name="DiskUsageText" DockPanel.Dock="Right" Text="Чтение н/д · запись н/д" Foreground="{StaticResource Ink}" FontSize="10"/></DockPanel>
+                <Viewbox Height="24" Stretch="Fill" Margin="0,5,0,0"><Canvas Width="120" Height="24"><Polyline x:Name="DiskGraphLine" Stroke="#FFFF8F7A" StrokeThickness="1.5"/></Canvas></Viewbox>
+                <TextBlock x:Name="DiskSpaceText" Text="Свободное место: н/д" Foreground="{StaticResource MutedInk}" FontSize="9" TextWrapping="Wrap" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Border>
+            <TextBlock x:Name="SystemStatusText" Text="Получение системных показателей…" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,10,0,0"/>
           </StackPanel>
+          <StackPanel x:Name="AudioMixerContent" Visibility="Collapsed">
+            <TextBlock Text="NOVA AUDIO" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
+            <TextBlock Text="Микшер Windows" Foreground="{StaticResource Ink}" FontSize="22" FontWeight="SemiBold" Margin="0,7,0,12"/>
+            <TextBlock Text="Устройство вывода" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,0,0,4"/>
+            <ComboBox x:Name="AudioOutputDeviceCombo" DisplayMemberPath="Name" SelectedValuePath="Id" SelectionChanged="AudioDeviceCombo_SelectionChanged" Background="#1FFFFFFF" Foreground="{StaticResource Ink}" Padding="6,5"/>
+            <TextBlock Text="Устройство ввода" Foreground="{StaticResource PanelInk}" FontSize="10" Margin="0,9,0,4"/>
+            <ComboBox x:Name="AudioInputDeviceCombo" DisplayMemberPath="Name" SelectedValuePath="Id" SelectionChanged="AudioDeviceCombo_SelectionChanged" Background="#1FFFFFFF" Foreground="{StaticResource Ink}" Padding="6,5"/>
+            <TextBlock x:Name="AudioMixerStatusText" Text="Поиск аудиоустройств…" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,9,0,8"/>
+            <ItemsControl x:Name="AudioSessionsList">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border CornerRadius="12" Background="#18FFFFFF" Padding="9" Margin="0,0,0,6">
+                    <Grid>
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                      <Border Width="30" Height="30" CornerRadius="9" Background="#28A991FF" VerticalAlignment="Top">
+                        <TextBlock Text="{Binding Initial}" Foreground="#C4B5FF" FontSize="12" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      </Border>
+                      <Image Grid.Column="0" Source="{Binding Icon}" Width="30" Height="30" VerticalAlignment="Top"/>
+                      <StackPanel Grid.Column="1" Margin="7,0,0,0">
+                        <DockPanel>
+                          <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="11" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                          <Button DockPanel.Dock="Right" Content="{Binding MuteText}" Tag="{Binding}" Click="AudioSessionMute_Click" Style="{StaticResource SmallButton}" Margin="5,0,0,0" Padding="7,3"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,5,0,0">
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding Volume, StringFormat={}{0:P0}}" Foreground="{StaticResource MutedInk}" FontSize="9" VerticalAlignment="Center" Margin="5,0,0,0"/>
+                          <Slider Minimum="0" Maximum="1" Value="{Binding Volume, Mode=TwoWay}" ValueChanged="AudioSessionVolumeSlider_ValueChanged" Height="20"/>
+                        </DockPanel>
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+          <ScrollViewer x:Name="NotificationCenterContent" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+              <DockPanel>
+                <TextBlock x:Name="NotificationCenterUnreadText" DockPanel.Dock="Right" Text="0 непрочитанных" Foreground="{StaticResource MutedInk}" FontSize="9" VerticalAlignment="Center"/>
+                <StackPanel>
+                  <TextBlock Text="NOVA" Foreground="{StaticResource MutedInk}" FontSize="10" FontWeight="SemiBold"/>
+                  <TextBlock Text="Центр уведомлений" Foreground="{StaticResource Ink}" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,10"/>
+                </StackPanel>
+              </DockPanel>
+              <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,10">
+                <StackPanel>
+                  <TextBlock Text="Новое напоминание" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
+                  <TextBox x:Name="NotificationReminderTitleBox" ToolTip="Название" Text="" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,7,0,0"/>
+                  <TextBox x:Name="NotificationReminderBodyBox" ToolTip="Текст (необязательно)" Text="" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="70" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="0,5,0,0"/>
+                  <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="76"/></Grid.ColumnDefinitions>
+                    <DatePicker x:Name="NotificationReminderDatePicker" Background="#16FFFFFF" Foreground="{StaticResource Ink}"/>
+                    <TextBox x:Name="NotificationReminderTimeBox" Grid.Column="1" Text="12:00" ToolTip="Время, ЧЧ:ММ" Background="#16FFFFFF" Foreground="{StaticResource Ink}" BorderBrush="#24FFFFFF" Padding="7,5" Margin="5,0,0,0"/>
+                  </Grid>
+                  <Button Style="{StaticResource SmallButton}" Content="Создать напоминание" Click="NotificationAddReminder_Click" HorizontalAlignment="Left" Margin="0,7,0,0" Padding="9,5"/>
+                </StackPanel>
+              </Border>
+              <TextBlock x:Name="NotificationCenterStatusText" Text="Загрузка…" Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <ItemsControl x:Name="NotificationCenterList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="12" Background="#18FFFFFF" Padding="10" Margin="0,0,0,7">
+                      <StackPanel>
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding KindText}" Foreground="#FFF0A84B" FontSize="9" Margin="8,0,0,0"/>
+                          <TextBlock Text="{Binding Title}" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        </DockPanel>
+                        <TextBlock Text="{Binding Body}" Foreground="{StaticResource PanelInk}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        <TextBlock Text="{Binding DateText}" Foreground="{StaticResource MutedInk}" FontSize="9" Margin="0,4,0,0"/>
+                        <WrapPanel Margin="0,7,0,0">
+                          <Button Tag="{Binding}" Content="{Binding ReadText}" Click="NotificationMarkRead_Click" Style="{StaticResource SmallButton}" Margin="0,0,5,0" Padding="7,4"/>
+                          <Button Tag="{Binding}" Content="{Binding ToggleText}" Click="NotificationToggleReminder_Click" IsEnabled="{Binding CanToggle}" Style="{StaticResource SmallButton}" Margin="0,0,5,0" Padding="7,4"/>
+                          <Button Tag="{Binding}" Content="Удалить" Click="NotificationDelete_Click" Style="{StaticResource SmallButton}" Padding="7,4"/>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
           <Grid x:Name="TransferContent" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Grid.ColumnDefinitions><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="0.95*"/></Grid.ColumnDefinitions>
@@ -728,6 +1178,12 @@
                 </StackPanel>
                 <StackPanel x:Name="MonitoringSettingsPanel" Visibility="Collapsed">
                   <TextBlock Text="Monitoring" Style="{StaticResource TitleText}" Margin="0,0,0,12"/>
+                  <TextBlock Text="Показатели системного монитора" Foreground="{StaticResource PanelInk}" FontSize="12"/>
+                  <CheckBox x:Name="ShowMonitorCpuCheckBox" Content="CPU · частота и температура" Foreground="{StaticResource Ink}" Margin="0,6,0,3" Click="SettingsOption_Click"/>
+                  <CheckBox x:Name="ShowMonitorGpuCheckBox" Content="GPU · частота, температура и VRAM" Foreground="{StaticResource Ink}" Margin="0,3" Click="SettingsOption_Click"/>
+                  <CheckBox x:Name="ShowMonitorRamCheckBox" Content="RAM · использование и доступно" Foreground="{StaticResource Ink}" Margin="0,3" Click="SettingsOption_Click"/>
+                  <CheckBox x:Name="ShowMonitorNetworkCheckBox" Content="Сеть · Download / Upload" Foreground="{StaticResource Ink}" Margin="0,3" Click="SettingsOption_Click"/>
+                  <CheckBox x:Name="ShowMonitorDiskCheckBox" Content="Диски · свободное место и I/O" Foreground="{StaticResource Ink}" Margin="0,3,0,10" Click="SettingsOption_Click"/>
                   <TextBlock Text="Показатели в компактной капсуле" Foreground="{StaticResource PanelInk}" FontSize="12"/>
                   <CheckBox x:Name="ShowCapsuleCpuCheckBox" Content="CPU" Foreground="{StaticResource Ink}" Margin="0,6,0,3" Click="SettingsOption_Click"/>
                   <CheckBox x:Name="ShowCapsuleGpuCheckBox" Content="GPU · 3D" Foreground="{StaticResource Ink}" Margin="0,3" Click="SettingsOption_Click"/>
@@ -736,7 +1192,7 @@
                   <CheckBox x:Name="ShowCapsuleVpnCheckBox" Content="Состояние адаптера Radmin VPN" ToolTip="Показывает только состояние локального адаптера Windows; доступность удалённого пользователя не проверяется." Foreground="{StaticResource Ink}" Margin="0,3,0,10" Click="SettingsOption_Click"/>
                   <TextBlock Text="Частота обновления показателей (секунды)" Foreground="{StaticResource PanelInk}" FontSize="12"/>
                   <DockPanel><TextBlock x:Name="SystemRefreshValue" DockPanel.Dock="Right" Foreground="{StaticResource MutedInk}" FontSize="10" VerticalAlignment="Center"/><Slider x:Name="SystemRefreshSlider" Minimum="1" Maximum="10" Value="2" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="SettingsSlider_ValueChanged" Margin="0,2,8,8"/></DockPanel>
-                  <TextBlock x:Name="MonitoringDescriptionText" Text="Показатели обновляются через Windows Performance Counters." Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                  <TextBlock x:Name="MonitoringDescriptionText" Text="Показатели CPU, GPU, сети и дисков читаются из Windows; датчики температуры зависят от оборудования и драйвера." Foreground="{StaticResource MutedInk}" FontSize="10" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 </StackPanel>
                 <StackPanel x:Name="AppearanceSettingsPanel" Visibility="Collapsed">
                   <TextBlock Text="Appearance" Style="{StaticResource TitleText}" Margin="0,0,0,12"/>

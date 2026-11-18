@@ -6,6 +6,9 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using System.IO.Pipes;
+using System.Text;
+using System.Threading;
 using Application = System.Windows.Application;
 using CommunityToolkit.WinUI.Notifications;
 using Nova.TransferEngine;
@@ -26,13 +29,37 @@ public partial class App : Application
     private ShellWindow? _window;
     private LocalTransferService? _transferService;
     private DispatcherTimer? _trainReminderTimer;
+    private NotificationCenterService? _notificationCenter;
+    private ProductivityService? _productivityService;
+    private WindowsToastNotificationService? _toastNotificationService;
+    private string? _toastRegistrationError;
+    private const string ActivationPipeName = "NOVA.TaskBar.Activation.6";
+    private CancellationTokenSource? _activationListenerCancellation;
+    private Task? _activationListenerTask;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         _singleInstance = new Mutex(true, "NOVA.TaskBar.SingleInstance", out var created);
-        if (!created) { Shutdown(); return; }
+        if (!created)
+        {
+            TryActivateRunningInstance();
+            Shutdown();
+            return;
+        }
         _ownsMutex = true;
         base.OnStartup(e);
+
+        try
+        {
+            WindowsToastRegistration.Initialize();
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException or InvalidOperationException or
+                System.Runtime.InteropServices.COMException or ArgumentException)
+        {
+            _toastRegistrationError = ex.Message;
+            System.Diagnostics.Trace.TraceError("Could not register Windows Toast notifications: {0}", ex);
+        }
 
         var stateDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NOVA", "TaskBar");
         _transferService = new LocalTransferService(stateDirectory);
@@ -41,13 +68,69 @@ public partial class App : Application
             new TrainReminderStore(stateDirectory),
             schedule.TimeZone ?? LocalTrainScheduleService.GetMoscowTimeZone());
         reminderScheduler.Initialize();
-        var reminderNotifier = new WindowsToastNotificationService();
-        _window = new ShellWindow(_transferService, reminderScheduler);
+        _notificationCenter = new NotificationCenterService(new NotificationCenterStore(stateDirectory));
+        _notificationCenter.Initialize();
+        _productivityService = new ProductivityService(new ProductivityStore(stateDirectory));
+        _productivityService.Initialize();
+        if (_notificationCenter.IsAvailable)
+        {
+            try
+            {
+                _notificationCenter.SyncTrainReminders(reminderScheduler.Reminders, reminderScheduler);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                System.Diagnostics.Trace.TraceError("Could not synchronize train reminders with the notification center: {0}", ex);
+            }
+        }
+        reminderScheduler.Changed += (_, _) =>
+        {
+            if (_notificationCenter?.IsAvailable == true)
+            {
+                try
+                {
+                    _notificationCenter.SyncTrainReminders(reminderScheduler.Reminders, reminderScheduler);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    _trayIcon?.ShowBalloonTip(5000, "Центр уведомлений", ex.Message, ToolTipIcon.Warning);
+                }
+            }
+        };
+        _toastNotificationService = new WindowsToastNotificationService();
+        _window = new ShellWindow(_transferService, reminderScheduler, _notificationCenter, _productivityService);
         InitializeTray();
+        StartActivationListener();
         ToastNotificationManagerCompat.OnActivated += _ => Dispatcher.BeginInvoke(new Action(ShowPanel));
+        if (_toastRegistrationError is not null)
+            _trayIcon?.ShowBalloonTip(5000, "Windows Toast", _toastRegistrationError, ToolTipIcon.Warning);
+        if (!_productivityService.IsAvailable)
+            _trayIcon?.ShowBalloonTip(5000, "Productivity", _productivityService.LastError ?? "Локальное хранилище недоступно.", ToolTipIcon.Warning);
         _trainReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(15) };
         _trainReminderTimer.Tick += (_, _) =>
-            reminderScheduler.ProcessDue(DateTimeOffset.UtcNow, reminderNotifier);
+        {
+            var center = _notificationCenter!;
+            var previousTrainError = reminderScheduler.LastError;
+            reminderScheduler.ProcessDue(DateTimeOffset.UtcNow, _toastNotificationService!);
+            if (reminderScheduler.LastError is { Length: > 0 } trainError &&
+                !string.Equals(trainError, previousTrainError, StringComparison.Ordinal))
+                _trayIcon?.ShowBalloonTip(5000, "Напоминание о поезде", trainError, ToolTipIcon.Warning);
+
+            var previousCenterError = center.LastError;
+            center.ProcessDue(DateTimeOffset.UtcNow, _toastNotificationService!.ShowNotification);
+            if (center.LastError is { Length: > 0 } centerError &&
+                !string.Equals(centerError, previousCenterError, StringComparison.Ordinal))
+                _trayIcon?.ShowBalloonTip(5000, "Центр уведомлений", centerError, ToolTipIcon.Warning);
+
+            var productivity = _productivityService;
+            if (productivity is null)
+                return;
+            var previousProductivityError = productivity.LastError;
+            productivity.ProcessDue(DateTimeOffset.UtcNow, DeliverProductivityNotification);
+            if (productivity.LastError is { Length: > 0 } productivityError &&
+                !string.Equals(productivityError, previousProductivityError, StringComparison.Ordinal))
+                _trayIcon?.ShowBalloonTip(5000, "Productivity", productivityError, ToolTipIcon.Warning);
+        };
         _trainReminderTimer.Start();
         _transferService.IncomingOffer += OnIncomingOffer;
         _transferService.WebRtcIncomingOffer += OnWebRtcIncomingOffer;
@@ -80,22 +163,113 @@ public partial class App : Application
         _trayIcon.DoubleClick += (_, _) => ShowPanel();
     }
 
+    private void StartActivationListener()
+    {
+        _activationListenerCancellation?.Dispose();
+        _activationListenerCancellation = new CancellationTokenSource();
+        var cancellation = _activationListenerCancellation.Token;
+        _activationListenerTask = Task.Run(async () =>
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                await using var server = new NamedPipeServerStream(
+                    ActivationPipeName,
+                    PipeDirection.In,
+                    1,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous);
+                try
+                {
+                    await server.WaitForConnectionAsync(cancellation);
+                    var buffer = new byte[32];
+                    var read = await server.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellation);
+                    var command = Encoding.UTF8.GetString(buffer, 0, read);
+                    if (string.Equals(command, "SHOW", StringComparison.Ordinal))
+                        _ = Dispatcher.BeginInvoke(new Action(ShowPanel));
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) when (
+                    ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellation);
+                }
+            }
+        }, cancellation);
+    }
+
+    private static void TryActivateRunningInstance()
+    {
+        try
+        {
+            using var client = new NamedPipeClientStream(
+                ".",
+                ActivationPipeName,
+                PipeDirection.Out,
+                PipeOptions.Asynchronous);
+            client.Connect(1000);
+            var command = Encoding.UTF8.GetBytes("SHOW");
+            client.Write(command, 0, command.Length);
+            client.Flush();
+        }
+        catch (Exception ex) when (
+            ex is TimeoutException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            System.Diagnostics.Trace.TraceWarning("Could not activate the running NOVA instance: {0}", ex);
+        }
+    }
+
     private void OnIncomingOffer(IncomingOfferRequest request)
     {
         var offer = request.Offer;
         Dispatcher.BeginInvoke(new Action(() =>
-            _trayIcon?.ShowBalloonTip(5000, "Входящий файл",
-                $"{offer.Sender.DisplayName} отправляет «{offer.FileName}» ({offer.SizeBytes:N0} байт). Откройте NOVA, чтобы принять или отклонить.",
-                ToolTipIcon.Info)));
+            RecordAndNotify("Входящий файл",
+                $"{offer.Sender.DisplayName} отправляет «{offer.FileName}» ({offer.SizeBytes:N0} байт). Откройте NOVA, чтобы принять или отклонить.")));
     }
 
     private void OnWebRtcIncomingOffer(WebRtcIncomingOfferRequest request)
     {
         var offer = request.Offer;
         Dispatcher.BeginInvoke(new Action(() =>
-            _trayIcon?.ShowBalloonTip(5000, "Входящий WebRTC файл",
-                $"{offer.Sender.DisplayName} предлагает {offer.FileName} ({offer.SizeBytes:N0} байт). Откройте NOVA, чтобы принять или отклонить запрос.",
-                ToolTipIcon.Info)));
+            RecordAndNotify("Входящий WebRTC файл",
+                $"{offer.Sender.DisplayName} предлагает {offer.FileName} ({offer.SizeBytes:N0} байт). Откройте NOVA, чтобы принять или отклонить запрос.")));
+    }
+
+    private void RecordAndNotify(string title, string message, string? notificationTag = null)
+    {
+        try
+        {
+            _notificationCenter?.AddSystemEvent(title, message, DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _trayIcon?.ShowBalloonTip(5000, title, $"Не удалось сохранить событие: {ex.Message}", ToolTipIcon.Warning);
+        }
+
+        try
+        {
+            _toastNotificationService?.ShowNotification(
+                title,
+                message,
+                notificationTag ?? Guid.NewGuid().ToString("N"));
+        }
+        catch (ToastNotificationDeliveryException ex)
+        {
+            _trayIcon?.ShowBalloonTip(5000, title, $"Windows Toast недоступен: {ex.Message}", ToolTipIcon.Warning);
+        }
+    }
+
+    private void DeliverProductivityNotification(string title, string message, string notificationTag)
+    {
+        (_toastNotificationService ?? throw new InvalidOperationException("Windows Toast сервис не инициализирован."))
+            .ShowNotification(title, message, notificationTag);
+        try
+        {
+            _notificationCenter?.AddSystemEvent(title, message, DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _trayIcon?.ShowBalloonTip(5000, title, $"Уведомление показано, но история не сохранена: {ex.Message}", ToolTipIcon.Warning);
+        }
     }
 
     private void ShowPanel()
@@ -124,6 +298,9 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _trainReminderTimer?.Stop();
+        _activationListenerCancellation?.Cancel();
+        _activationListenerCancellation?.Dispose();
+        _activationListenerCancellation = null;
         _trayIcon?.Dispose();
         _trayMenu?.Dispose();
         _novaIcon?.Dispose();

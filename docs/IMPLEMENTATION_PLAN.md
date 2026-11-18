@@ -795,3 +795,55 @@ Research references:
 
 - GitHub's latest published version was `v6.0.4`; no `v6.0.5` tag or release existed. The current working tree had advanced to local-only product versions through `6.0.10`. For the explicitly requested next public release, the product version is aligned to `6.0.5` while retaining the current code.
 - The self-contained `win-x64` Release publish completed, and the Debug and Release Windows-client test runs each passed **31/31**.
+
+## NOVA Control Center — local v6.0.6 build (2026-11-18)
+
+- Added live system metrics and history graphs for CPU, GPU, memory, network, and disks. Hardware sensors that are not exposed by the current device/driver are reported as unavailable rather than replaced with estimates.
+- Added a Windows Core Audio mixer for active sessions and endpoint selection, plus a persistent local notification center with scheduled reminders. Existing train reminders feed the same scheduler; Windows Toasts are dispatched independently of the visible panel. The existing Windows media-session and audio-visualization integrations remain in use, with a karaoke-style highlight for the active lyrics line.
+- Notification-center state is stored as JSON under the user's local NOVA application data directory; no separate database or network service was added. The Windows client product version is `6.0.6`.
+- Published a self-contained `win-x64` Release to `build/NOVA-Taskbar-Release-v6.0.6-control-center/publish/` and packaged it as `build/NOVA-Taskbar-v6.0.6-control-center-win-x64.zip`. ZIP SHA-256: `baad5be78578aa953fdcb607ded69c5f986b7b2de0e516ad68547ad33272852a`. This build has not been pushed to GitHub.
+- **TESTS VERIFIED:** Windows-client tests passed **35/35** in both Debug and Release. Local smoke checks exercised real system metric collection, audio-session enumeration, and WASAPI loopback. The Toast delivery path was later found to fail in this unpackaged Win32 environment before a valid app identity was registered; the v6.1.0 section below records the corrected and verified path.
+- **PACKAGE VERIFIED:** All 502 ZIP entries were read successfully (222,374,765 uncompressed bytes); entry paths use portable `/` separators, required application/runtime/native/schedule files are present, selected executable hashes match the publish directory, and the SHA-256 sidecar matches.
+- **SHORTCUT:** Updated `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` to the v6.0.6 publish executable, with matching working directory and executable icon.
+- **RUNTIME / GUI: NOT VERIFIED.** An existing v6.0.10 single-instance process (PID 21704) was left running and not interrupted. Visual widget checks and interactive endpoint switching were not performed; endpoint switching was not exercised to avoid changing the user's audio settings. Temperature/frequency/VRAM availability remains device-dependent.
+
+## NOVA Productivity 1.0 — local v6.1.0 build (2026-11-18)
+
+### Implemented
+
+- Added one local, versioned JSON document at `%LOCALAPPDATA%\NOVA\TaskBar\productivity.json` for tasks, notes, timers, smart reminders, calendar events, local context memory, quick actions, and workflows. Writes use a temporary file, flush, and replace; existing settings and Notification Center data remain separate and unchanged. Schema v0 migrates to v1.
+- The Productivity widget provides searchable, editable, pinnable tasks and notes with categories, priorities, and deadlines; multiple countdowns/stopwatches with pause/resume/reset and elapsed-time reconstruction; manually entered calendar events with recurrence, task links, and configurable lead time; and searchable/editable/deletable local memory.
+- Added Russian natural-language reminder parsing for supported date/time and recurrence phrases, plus reminder editing, snoozing, enable/disable, and deletion. Occurrence calculations use the stored local time-zone ID and handle DST gaps/ambiguity. Old occurrences outside the five-minute delivery grace period are skipped rather than replayed.
+- The app-level scheduler runs on the existing dispatcher timer while NOVA remains in the tray, independent of panel visibility. Notification submission failures restore the pending state for retry; successful submissions are recorded in the existing Notification Center. Windows delivery uses `ToastNotificationManager` with a stable AUMID; startup registers that AUMID and creates/updates a per-user Start Menu shortcut. The test confirmed the scheduled Productivity Toast was accepted into Windows notification history without creating a panel window.
+- Quick actions open a validated existing path or launch an application without shell command interpolation. System lock/sleep and application/execute-capable targets require explicit confirmation. No cloud storage, server, external calendar source, or voice-recognition integration was added; calendar entries and memory are local and user-entered.
+- Fixed the workflow editor to hold typed action rows, render them in the draft list, and allow removing a step before saving.
+- Updated the Windows client product version to `6.1.0`. Published a self-contained `win-x64` build to `build/NOVA-Taskbar-Release-v6.1.0-productivity/publish/`; the EXE and managed assembly report file/assembly version `6.1.0.0`. Created `build/NOVA-Taskbar-v6.1.0-win-x64.zip` and its `.sha256` sidecar. ZIP SHA-256: `bd4cd15d26aec962e0f561a5ea70da28b4dd9e92a1b40658143679fe3f881ce7`. GitHub was not updated.
+- Updated `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk`; its target, working directory, and icon point to the v6.1.0 publish. The per-user Start Menu shortcut used for Toast identity points to the same executable.
+
+### Verification and remaining limits
+
+- **BUILD VERIFIED:** self-contained Release `win-x64` publish completed; Debug and Release Windows-client suites each passed **42/42**. `git diff --check` passed.
+- **FUNCTIONAL VERIFIED:** Tests cover storage and migration, task/note/memory CRUD and search, multiple timers and restart reconstruction, retry after failed notification submission, one-time delivery/deduplication, recurring reminders, calendar recurrence and time-zone transitions, and confirmation requirements for risky actions.
+- **WINDOWS TOAST VERIFIED:** a due Productivity reminder was submitted through the Windows Toast API and appeared in the NOVA app's Windows notification history; the smoke test ran on an STA thread without creating the NOVA panel.
+- **PACKAGE VERIFIED:** all 502 ZIP entries were read and their contents compared with the publish files; required EXE, managed DLL, runtime config, WebRTC native DLL, and schedule resource were present. The SHA-256 sidecar matched.
+- **SHORTCUT VERIFIED:** desktop and Start Menu targets, working directories, and icon paths point to the v6.1.0 EXE; the EXE and managed assembly report `6.1.0.0`.
+- **GUI / END-TO-END: NOT VERIFIED.** An already-running v6.0.6 single-instance process (PID 32160) was left untouched. Interactive UI editing, visual Toast popup, full application restart through the shortcut, and actual lock/sleep/open-path execution were not exercised. Toast visibility can also be suppressed by Windows notification settings or Focus Assist.
+- **PROCESS-EXIT LIMIT:** The scheduler is in-process; hiding the panel leaves NOVA running in the tray and notifications continue, but fully exiting NOVA stops scheduled delivery until the app is launched again. On restart, overdue one-time reminders within the grace period can be recovered; expired reminders are skipped. Delivery at the exact scheduled time while the process is fully closed is **NOT IMPLEMENTED**.
+- **VOICE / EXTERNAL CALENDAR: NOT IMPLEMENTED.** The repository has no production speech-input or external calendar integration; no simulated support is presented.
+
+## Startup fix — local v6.1.1 build (2026-11-18)
+
+- Reproduced the launcher symptom when an older NOVA process was still running: the new process acquired no single-instance mutex, returned immediately, and could leave only a brief application-shell flash in the taskbar.
+- Added a local named-pipe activation channel to the existing Win32 single-instance mutex. When a second NOVA launch is detected, the new process sends `SHOW` to the running instance and exits before creating shell/window resources. The existing instance dispatches `ShowPanel` back onto its WPF dispatcher and restores the capsule from the tray.
+- The named pipe is local only, accepts no remote connections, and carries only the fixed `SHOW` command. Pipe and activation timeouts are bounded; the listener stops during application shutdown.
+- Bumped the Windows client product version to `6.1.1` and published a self-contained `win-x64` package to `build/NOVA-Taskbar-Release-v6.1.1-startup-fix/publish/`. The Release archive is `build/NOVA-Taskbar-v6.1.1-startup-fix-win-x64.zip`, with SHA-256 `73d6d01ecd72cf7768b36fa60e85019a0119bc2c87dbd12d4204974dd4fdf8ec`.
+- **BUILD / TESTS VERIFIED:** Debug and Release Windows-client suites passed **42/42**. `git diff --check` passed.
+- **SINGLE-INSTANT ACTIVATION: NOT YET VERIFIED AT GUI LAYER** until the existing old build is stopped and v6.1.1 is launched once, then launched again through the desktop shortcut.
+
+## Startup crash and duplicate-launch fix — local v6.1.2 build (2026-11-18)
+
+- The v6.1.1 launch exposed a startup crash in the Productivity action editor: XAML fired `SelectionChanged` while `InitializeComponent` was still constructing controls, and `UpdateActionTargetVisibility` dereferenced not-yet-created visibility controls.
+- Added null guards for the Productivity action target panel and folder button. This prevents partial-XAML initialization callbacks from terminating the process.
+- Repeated-launch IPC was verified with a real running process: the first v6.1.2 process remained alive (`PID 11172`); a second launch (`PID 34292`) exited within the activation check and did not create a second NOVA process. The existing instance remained the only running process.
+- Updated the desktop and Start Menu shortcuts to v6.1.2. Direct GUI startup remained responsive for more than four seconds and did not produce another taskbar/process flash after the old process was replaced.
+- Release EXE version: `6.1.2.0`. Archive: `build/NOVA-Taskbar-v6.1.2-startup-fix-win-x64.zip`. ZIP SHA-256: `c2f7b35c65ad3784ef9434b6eec8dc04e9451af7d6d90f05bd9faade615977cb`.

@@ -17,6 +17,38 @@ Mark Heath and contributors, and is licensed under the MIT License.
 Source: <https://github.com/naudio/NAudio>
 License: <https://licenses.nuget.org/MIT>
 
+## LibreHardwareMonitor
+
+LibreHardwareMonitorLib 0.9.6 is used to read hardware-provided CPU and GPU
+temperature, clock, and video-memory sensors when available. It is licensed
+under MPL-2.0. Sensor data is read locally; unsupported or inaccessible sensors
+are reported as unavailable.
+
+Source: <https://github.com/LibreHardwareMonitor/LibreHardwareMonitor>
+License: <https://licenses.nuget.org/MPL-2.0>
+
+LibreHardwareMonitorLib depends on DiskInfoToolkit 1.1.2 and
+RAMSPDToolkit-NDD 1.4.2, both licensed under MPL-2.0, and HidSharp 2.6.4,
+licensed under Apache-2.0. Its Windows dependency set also includes
+BlackSharp.Core 1.0.7 (MPL-2.0), Mono.Posix.NETStandard 1.0.0 (Microsoft
+.NET Library License), and Microsoft System.Management, System.Numerics.Tensors,
+System.IO.FileSystem.AccessControl, and System.IO.Ports packages (MIT).
+
+Sources:
+- <https://github.com/Blacktempel/DiskInfoToolkit>
+- <https://github.com/Blacktempel/RAMSPDToolkit>
+- <https://software.seekye.com/hidsharp>
+- <https://www.nuget.org/packages/BlackSharp.Core/1.0.7>
+- <https://www.nuget.org/packages/Mono.Posix.NETStandard/1.0.0>
+
+Licenses:
+- <https://licenses.nuget.org/MPL-2.0>
+- <https://licenses.nuget.org/Apache-2.0>
+- <https://go.microsoft.com/fwlink/?linkid=869050>
+- <https://licenses.nuget.org/MIT>
+
+HidSharp copyright 2010-2025 James F. Bellinger.
+
 ## Yandex Music API reference
 
 The optional lyrics client follows the reverse-engineered Yandex Music search

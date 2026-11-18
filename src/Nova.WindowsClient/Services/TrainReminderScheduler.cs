@@ -19,7 +19,7 @@ internal interface ITrainReminderNotifier
 }
 
 internal sealed class TrainReminderNotificationException(string message, Exception innerException)
-    : Exception(message, innerException);
+    : IOException(message, innerException);
 
 internal sealed class TrainReminderScheduler
 {

@@ -28,7 +28,6 @@ public partial class ShellWindow
 {
     private readonly MediaSessionService _mediaService = new();
     private readonly WeatherService _weatherService = new();
-    private readonly IslandTimerService _islandTimer = new();
     private readonly SystemStatsService _systemStatsService = new();
     private readonly AudioMeterService _audioMeterService = new();
     private readonly SystemMasterVolumeService _masterVolumeService = new();
@@ -61,7 +60,6 @@ public partial class ShellWindow
     private bool _islandStarted;
     private bool _islandDisposed;
     private bool _isDragging;
-    private bool _timerFinishNotified;
     private bool _isGamingOverlay;
     private bool _overlayEditMode;
     private bool _inciUriAvailable;
@@ -97,7 +95,7 @@ public partial class ShellWindow
         _audioReactiveTimer.Tick += (_, _) => UpdateAudioReactiveUi();
         _timerPulse.Tick += (_, _) =>
         {
-            UpdateTimerUi();
+            RefreshProductivityTimers();
             UpdateMediaProgress();
         };
         _systemStatsTimer.Tick += async (_, _) => await RefreshSystemStatsAsync();
@@ -123,7 +121,7 @@ public partial class ShellWindow
         _islandStarted = true;
         UpdateClock();
         UpdateMediaUi();
-        UpdateTimerUi();
+        RefreshProductivityTimers();
         _clockTimer.Start();
         _mediaRefreshTimer.Start();
         _timerPulse.Start();
@@ -167,6 +165,9 @@ public partial class ShellWindow
         _mediaService.Dispose();
         _audioMeterService.Dispose();
         _systemStatsService.Dispose();
+        DisposeAudioMixerUi();
+        DisposeNotificationCenterUi();
+        DisposeProductivityUi();
     }
 
     private void UpdateClock()
@@ -748,7 +749,7 @@ public partial class ShellWindow
         UpdateCompactCapsuleContent();
     }
 
-    private static string FormatPercent(double? value) => value is double percent ? $"{percent:0}%" : "—";
+    private static string FormatPercent(double? value) => value is double percent ? $"{percent:0}%" : "н/д";
 
     private static string FormatNetworkRate(double? bytesPerSecond)
     {
@@ -850,27 +851,23 @@ public partial class ShellWindow
     private static string FormatMediaTime(TimeSpan value) =>
         value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : $"{(int)value.TotalMinutes}:{value.Seconds:00}";
 
-    private void UpdateTimerUi()
-    {
-        _islandTimer.Tick();
-        TimerDisplayText.Text = _islandTimer.Display;
-        TimerStartPauseButton.Content = _islandTimer.IsRunning ? "Пауза" : "Запустить";
-        TimerCountdownOptions.Visibility = _islandTimer.Mode == IslandTimerMode.Countdown ? Visibility.Visible : Visibility.Collapsed;
-        TimerStatusText.Text = _islandTimer.JustFinished ? "Время вышло" : _islandTimer.IsRunning ? "Идёт" : _islandTimer.IsActive ? "Пауза" : "Готов";
-        if (_islandTimer.JustFinished && !_timerFinishNotified)
-        {
-            _timerFinishNotified = true;
-            if (_timerCompletionSound) System.Media.SystemSounds.Exclamation.Play();
-        }
-        UpdateCompactActivity();
-    }
-
     private void UpdateCompactActivity()
     {
-        if (_islandTimer.IsActive)
+        var activeTimer = _productivityService.IsAvailable
+            ? _productivityService.GetTimerSnapshots(DateTimeOffset.UtcNow)
+                .FirstOrDefault(timer => timer.IsRunning ||
+                    !timer.Timer.IsCompleted && timer.Elapsed > TimeSpan.Zero)
+            : null;
+        if (activeTimer is not null)
         {
-            CompactActivityText.Text = $"Таймер {_islandTimer.Display}";
-            ActivityDot.Fill = _islandTimer.IsRunning ? new SolidColorBrush(WpfColor.FromRgb(0xFF, 0xC2, 0x7A)) : new SolidColorBrush(WpfColor.FromRgb(0x96, 0xA1, 0xB8));
+            var value = activeTimer.Timer.Kind == ProductivityTimerKind.Countdown
+                ? TimeSpan.FromSeconds(Math.Ceiling(activeTimer.Remaining.TotalSeconds))
+                : activeTimer.Elapsed;
+            var display = value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : value.ToString(@"mm\:ss");
+            CompactActivityText.Text = $"{activeTimer.Timer.Name} {display}";
+            ActivityDot.Fill = activeTimer.IsRunning
+                ? new SolidColorBrush(WpfColor.FromRgb(0xFF, 0xC2, 0x7A))
+                : new SolidColorBrush(WpfColor.FromRgb(0x96, 0xA1, 0xB8));
         }
         else if (_incomingOffers.Count > 0)
         {
@@ -903,24 +900,7 @@ public partial class ShellWindow
             var snapshot = await Task.Run(_systemStatsService.Sample);
             if (_islandDisposed) return;
             _latestStats = snapshot;
-            CpuUsageText.Text = snapshot.CpuPercent is double cpu ? $"{cpu:0}%" : "н/д";
-            CpuUsageBar.Value = snapshot.CpuPercent ?? 0;
-            GpuUsageText.Text = snapshot.Gpu3DPercent is double gpu ? $"{gpu:0}%" : "н/д";
-            GpuUsageBar.Value = snapshot.Gpu3DPercent ?? 0;
-            var ramPercent = snapshot.RamTotalGb > 0 ? snapshot.RamUsedGb / snapshot.RamTotalGb * 100 : 0;
-            RamUsageText.Text = $"{snapshot.RamUsedGb:0.0}/{snapshot.RamTotalGb:0.0} ГБ · {ramPercent:0}%";
-            RamUsageBar.Value = Math.Clamp(ramPercent, 0, 100);
-            OverlayCpuText.Text = snapshot.CpuPercent is double overlayCpu ? $"{overlayCpu:0}%" : "н/д";
-            OverlayGpuText.Text = snapshot.Gpu3DPercent is double overlayGpu ? $"{overlayGpu:0}%" : "н/д";
-            OverlayRamText.Text = $"{snapshot.RamUsedGb:0.0}/{snapshot.RamTotalGb:0.0} ГБ";
-            UpdateCompactMetrics();
-            SystemStatusText.Text = snapshot.CpuPercent is null && snapshot.Gpu3DPercent is null
-                ? "Счётчики CPU/GPU недоступны; RAM получена через Windows."
-                : snapshot.Gpu3DPercent is null
-                    ? "GPU 3D-счётчик недоступен; CPU/RAM обновляются раз в 2 секунды."
-                    : "Обновление раз в 2 секунды · GPU показывает максимум загрузки 3D-движка.";
-            if (snapshot.NetworkError is { Length: > 0 } networkError)
-                SystemStatusText.Text += $" Ошибка сетевых счётчиков: {networkError}";
+            UpdateSystemMonitorUi(snapshot);
         }
         catch (Exception ex) when (ex is Win32Exception or DllNotFoundException or ObjectDisposedException)
         {
@@ -1112,50 +1092,6 @@ public partial class ShellWindow
         if (!await _mediaService.SeekAsync(target))
             MediaStatusText.Text = "Перемотка не поддерживается этой медиасессией.";
         UpdateMediaProgress();
-    }
-
-    private void TimerCountdownMode_Click(object sender, RoutedEventArgs e)
-    {
-        _islandTimer.SetMode(IslandTimerMode.Countdown);
-        _timerFinishNotified = false;
-        UpdateTimerUi();
-    }
-
-    private void TimerStopwatchMode_Click(object sender, RoutedEventArgs e)
-    {
-        _islandTimer.SetMode(IslandTimerMode.Stopwatch);
-        _timerFinishNotified = false;
-        UpdateTimerUi();
-    }
-
-    private void TimerStartPause_Click(object sender, RoutedEventArgs e)
-    {
-        if (_islandTimer.IsRunning)
-        {
-            _islandTimer.Pause();
-        }
-        else
-        {
-            if (_islandTimer.Mode == IslandTimerMode.Countdown && !_islandTimer.IsActive)
-            {
-                if (!int.TryParse(TimerMinutesBox.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var minutes) || minutes is < 1 or > 1440)
-                {
-                    TimerStatusText.Text = "Введите целое число минут от 1 до 1440.";
-                    return;
-                }
-                _islandTimer.SetCountdownDuration(TimeSpan.FromMinutes(minutes));
-            }
-            _timerFinishNotified = false;
-            _islandTimer.Start();
-        }
-        UpdateTimerUi();
-    }
-
-    private void TimerReset_Click(object sender, RoutedEventArgs e)
-    {
-        _islandTimer.Reset();
-        _timerFinishNotified = false;
-        UpdateTimerUi();
     }
 
     private void VpnRefresh_Click(object sender, RoutedEventArgs e) => RefreshInciStatus();

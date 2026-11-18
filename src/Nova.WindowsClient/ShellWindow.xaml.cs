@@ -62,11 +62,17 @@ public partial class ShellWindow : Window
     private bool _showOverlayCpu = true;
     private bool _showOverlayGpu = true;
     private bool _showOverlayRam = true;
+    private bool _showMonitorCpu = true;
+    private bool _showMonitorGpu = true;
+    private bool _showMonitorRam = true;
+    private bool _showMonitorNetwork = true;
+    private bool _showMonitorDisk = true;
     private readonly DispatcherTimer _settingsSaveTimer;
     private readonly DispatcherTimer _displayRefreshTimer;
     private readonly DispatcherTimer _deviceRefreshTimer;
     private readonly DispatcherTimer _obsRefreshTimer;
     private readonly LocalTransferService _transferService;
+    private readonly ProductivityService _productivityService;
     private readonly WidgetRegistry _widgetRegistry = new();
     private readonly WidgetHost _widgetHost;
     private readonly ScreenOcrService _screenOcrService = new();
@@ -94,11 +100,18 @@ public partial class ShellWindow : Window
     private bool _displaySettingsSubscribed;
     private HwndSource? _windowSource;
 
-    internal ShellWindow(LocalTransferService transferService, TrainReminderScheduler trainReminderScheduler)
+    internal ShellWindow(
+        LocalTransferService transferService,
+        TrainReminderScheduler trainReminderScheduler,
+        NotificationCenterService notificationCenter,
+        ProductivityService productivityService)
     {
         InitializeComponent();
         _transferService = transferService;
+        _productivityService = productivityService ?? throw new ArgumentNullException(nameof(productivityService));
         _trainReminderScheduler = trainReminderScheduler;
+        InitializeNotificationCenterUi(notificationCenter);
+        InitializeProductivityUi(_productivityService);
         InitializeTrainScheduleUi();
         _browserWindowAdapter = new BrowserWindowAdapter(GetCapsuleBoundsForAdaptation);
         _browserWindowAdapter.StatusChanged += status => BrowserAdaptationStatusText.Text = status;
@@ -135,6 +148,7 @@ public partial class ShellWindow : Window
         HistoryList.ItemsSource = _historyRows;
         ObsSceneComboBox.ItemsSource = _obsScenes;
         LyricsLinesList.ItemsSource = _lyricsLines;
+        InitializeAudioMixerUi();
 
         _transferService.IncomingOffer += OnIncomingOffer;
         _transferService.WebRtcIncomingOffer += OnWebRtcIncomingOffer;
@@ -147,6 +161,9 @@ public partial class ShellWindow : Window
 
     private void RegisterWidgets()
     {
+        _widgetRegistry.Register(new WidgetDefinition("Audio", "Звук", "Микшер Windows Audio", "◖", AudioMixerContent,
+            onActivated: StartAudioMixer,
+            onDeactivated: _audioMixerRefreshTimer.Stop));
         _widgetRegistry.Register(new WidgetDefinition("Music", "Музыка", "Windows Media Session", "♫", MediaContent,
             onActivated: () =>
             {
@@ -156,9 +173,12 @@ public partial class ShellWindow : Window
             onDeactivated: _masterVolumeRefreshTimer.Stop));
         _widgetRegistry.Register(new WidgetDefinition("VPN", "VPN", "Статус и управление Inci", "◇", VpnContent,
             onActivated: RefreshInciStatus));
-        _widgetRegistry.Register(new WidgetDefinition("Timer", "Таймер", "Обратный отсчёт и секундомер", "◷", TimerContent));
+        _widgetRegistry.Register(new WidgetDefinition("Timer", "Продуктивность", "Задачи, заметки, календарь и таймеры", "✦", ProductivityContent,
+            onActivated: UpdateProductivityUi));
         _widgetRegistry.Register(new WidgetDefinition("Schedule", "Расписание", "Царское Село → Купчино · локально", "↦", ScheduleContent,
             onActivated: () => RefreshTrainSchedule(force: true)));
+        _widgetRegistry.Register(new WidgetDefinition("Notifications", "Уведомления", "События и локальные напоминания", "◉", NotificationCenterContent,
+            onActivated: UpdateNotificationCenterUi));
         _widgetRegistry.Register(new WidgetDefinition("Monitoring", "Мониторинг", "CPU · GPU · RAM", "⌁", SystemContent));
         _widgetRegistry.Register(new WidgetDefinition("OBS", "OBS", "Сцены и запись · OBS WebSocket", "◉", ObsContent,
             onActivated: () =>
@@ -567,6 +587,11 @@ public partial class ShellWindow : Window
         _showOverlayCpu = _preferences.ShowOverlayCpu ?? true;
         _showOverlayGpu = _preferences.ShowOverlayGpu ?? true;
         _showOverlayRam = _preferences.ShowOverlayRam ?? true;
+        _showMonitorCpu = _preferences.ShowMonitorCpu ?? true;
+        _showMonitorGpu = _preferences.ShowMonitorGpu ?? true;
+        _showMonitorRam = _preferences.ShowMonitorRam ?? true;
+        _showMonitorNetwork = _preferences.ShowMonitorNetwork ?? true;
+        _showMonitorDisk = _preferences.ShowMonitorDisk ?? true;
         _browserAdaptationEnabled = _preferences.BrowserAdaptationEnabled ?? false;
         _hoverCollapseTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(_preferences.HoverCollapseDelayMs ?? 420, 250, 1500));
         _weatherRefreshTimer.Interval = TimeSpan.FromMinutes(Math.Clamp(_preferences.WeatherRefreshMinutes ?? 15, 5, 60));
@@ -603,11 +628,17 @@ public partial class ShellWindow : Window
         ShowOverlayCpuCheckBox.IsChecked = _showOverlayCpu;
         ShowOverlayGpuCheckBox.IsChecked = _showOverlayGpu;
         ShowOverlayRamCheckBox.IsChecked = _showOverlayRam;
+        ShowMonitorCpuCheckBox.IsChecked = _showMonitorCpu;
+        ShowMonitorGpuCheckBox.IsChecked = _showMonitorGpu;
+        ShowMonitorRamCheckBox.IsChecked = _showMonitorRam;
+        ShowMonitorNetworkCheckBox.IsChecked = _showMonitorNetwork;
+        ShowMonitorDiskCheckBox.IsChecked = _showMonitorDisk;
         BrowserAdaptationCheckBox.IsChecked = _browserAdaptationEnabled;
         UpdateDockUi();
         UpdateAdaptiveLayout();
         UpdateSettingsOptionUi();
         UpdateOverlayMetricVisibility();
+        UpdateSystemMetricVisibility();
         UpdateCompactCapsuleContent();
         PanelSurface.Opacity = 1;
         LocalFingerprintText.Text = FormatFingerprint(_transferService.Identity.Fingerprint);
@@ -990,7 +1021,7 @@ public partial class ShellWindow : Window
         MediaContent.Visibility = section == "Music" ? Visibility.Visible : Visibility.Collapsed;
         WeatherContent.Visibility = section == "Weather" ? Visibility.Visible : Visibility.Collapsed;
         VpnContent.Visibility = section == "VPN" ? Visibility.Visible : Visibility.Collapsed;
-        TimerContent.Visibility = section == "Timer" ? Visibility.Visible : Visibility.Collapsed;
+        ProductivityContent.Visibility = section == "Timer" ? Visibility.Visible : Visibility.Collapsed;
         SystemContent.Visibility = section == "Monitoring" ? Visibility.Visible : Visibility.Collapsed;
         ModuleContent.Visibility = section == "Remote" ? Visibility.Visible : Visibility.Collapsed;
         if (section == "Settings") SetSettingsCategory("General");
@@ -1390,6 +1421,21 @@ public partial class ShellWindow : Window
             case nameof(ShowOverlayRamCheckBox):
                 _showOverlayRam = isChecked;
                 break;
+            case nameof(ShowMonitorCpuCheckBox):
+                _showMonitorCpu = isChecked;
+                break;
+            case nameof(ShowMonitorGpuCheckBox):
+                _showMonitorGpu = isChecked;
+                break;
+            case nameof(ShowMonitorRamCheckBox):
+                _showMonitorRam = isChecked;
+                break;
+            case nameof(ShowMonitorNetworkCheckBox):
+                _showMonitorNetwork = isChecked;
+                break;
+            case nameof(ShowMonitorDiskCheckBox):
+                _showMonitorDisk = isChecked;
+                break;
             default:
                 return;
         }
@@ -1398,6 +1444,7 @@ public partial class ShellWindow : Window
         UpdateCompactMetrics();
         UpdateCompactCapsuleContent();
         UpdateOverlayMetricVisibility();
+        UpdateSystemMetricVisibility();
         if (checkBox.Name is nameof(EnableMotionCheckBox) or nameof(EnableAudioReactiveCheckBox))
             UpdateAudioReactiveUi();
         SchedulePreferenceSave();
@@ -2200,6 +2247,11 @@ public partial class ShellWindow : Window
             ShowOverlayCpu = _showOverlayCpu,
             ShowOverlayGpu = _showOverlayGpu,
             ShowOverlayRam = _showOverlayRam,
+            ShowMonitorCpu = _showMonitorCpu,
+            ShowMonitorGpu = _showMonitorGpu,
+            ShowMonitorRam = _showMonitorRam,
+            ShowMonitorNetwork = _showMonitorNetwork,
+            ShowMonitorDisk = _showMonitorDisk,
             TimerCompletionSound = _timerCompletionSound,
             EnableMotion = _enableMotion,
             EnableAudioReactive = _enableAudioReactive,
