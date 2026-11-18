@@ -689,4 +689,4 @@ Research references:
 - **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` points to the v15 publish EXE, working directory, and icon.
 - **RUNTIME / GUI: NOT VERIFIED.** The already-running single-instance v14 process was left untouched; its mutex prevents an interactive launch of v15 without interrupting the existing session.
 - **FPS / frame-time / CPU profile: NOT VERIFIED.** No reliable frame-time capture was available, so stable 60 FPS is not claimed. Rapid UI transitions, repeated opens, long-session GUI behavior, and mixed-DPI/multi-monitor behavior remain unverified in v15.
-- This is a local-only release. No commit or GitHub push was made.
+- The v15 binary publish remains local and was not uploaded as a GitHub release asset. The source changes were pushed to `main` in commit `3c0f2e3`; the existing v6.0.3 tag and release asset were not changed.
