@@ -8,6 +8,9 @@ namespace Nova.WindowsClient;
 internal sealed class ScreenRegionSelector : Form
 {
     private readonly Rectangle _virtualBounds;
+    private readonly Pen _selectionPen;
+    private readonly SolidBrush _selectionFill;
+    private readonly Font _instructionFont;
     private Point _selectionStart;
     private Point _selectionEnd;
     private bool _selecting;
@@ -18,6 +21,9 @@ internal sealed class ScreenRegionSelector : Form
         if (_virtualBounds.Width <= 0 || _virtualBounds.Height <= 0)
             throw new InvalidOperationException("Windows не вернула корректные границы виртуального экрана.");
 
+        _selectionPen = new Pen(Color.FromArgb(255, 255, 188, 94), 2);
+        _selectionFill = new SolidBrush(Color.FromArgb(56, 255, 188, 94));
+        _instructionFont = new Font("Segoe UI", 13, FontStyle.Bold);
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Color.Black;
         Bounds = _virtualBounds;
@@ -37,24 +43,33 @@ internal sealed class ScreenRegionSelector : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(Color.FromArgb(255, 255, 188, 94), 2);
-        using var fill = new SolidBrush(Color.FromArgb(56, 255, 188, 94));
-        using var font = new Font(new FontFamily("Segoe UI"), 13, FontStyle.Bold);
         var screenRegion = CurrentScreenRegion();
         if (_selecting && screenRegion.Width > 0 && screenRegion.Height > 0)
         {
             var topLeft = PointToClient(screenRegion.Location);
             var bottomRight = PointToClient(new Point(screenRegion.Right, screenRegion.Bottom));
             var region = Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
-            e.Graphics.FillRectangle(fill, region);
-            e.Graphics.DrawRectangle(pen, region);
+            e.Graphics.FillRectangle(_selectionFill, region);
+            e.Graphics.DrawRectangle(_selectionPen, region);
         }
 
         e.Graphics.DrawString(
             "Перетащите рамку для распознавания · Esc — отмена",
-            font,
+            _instructionFont,
             Brushes.White,
             new PointF(18, 18));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _selectionPen.Dispose();
+            _selectionFill.Dispose();
+            _instructionFont.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)

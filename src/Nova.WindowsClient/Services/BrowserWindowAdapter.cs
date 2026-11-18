@@ -25,6 +25,7 @@ internal sealed class BrowserWindowAdapter : IDisposable
 
     private readonly Func<Rectangle?> _capsuleBounds;
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _refreshDebounceTimer;
     private readonly Dictionary<IntPtr, AdaptedWindow> _adapted = [];
     private bool _enabled;
     private bool _disposed;
@@ -32,8 +33,14 @@ internal sealed class BrowserWindowAdapter : IDisposable
     public BrowserWindowAdapter(Func<Rectangle?> capsuleBounds)
     {
         _capsuleBounds = capsuleBounds;
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Refresh();
+        _refreshDebounceTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(300) };
+        _refreshDebounceTimer.Tick += (_, _) =>
+        {
+            _refreshDebounceTimer.Stop();
+            Refresh();
+        };
     }
 
     public event Action<string>? StatusChanged;
@@ -46,19 +53,28 @@ internal sealed class BrowserWindowAdapter : IDisposable
         if (_enabled)
         {
             _timer.Start();
-            Refresh();
+            ScheduleRefresh();
         }
         else
         {
             _timer.Stop();
+            _refreshDebounceTimer.Stop();
             var failure = RestoreAll();
             StatusChanged?.Invoke(failure ?? "Адаптация окон браузеров выключена.");
         }
     }
 
+    public void ScheduleRefresh()
+    {
+        if (!_enabled || _disposed) return;
+        _refreshDebounceTimer.Stop();
+        _refreshDebounceTimer.Start();
+    }
+
     public void Refresh()
     {
         if (!_enabled || _disposed) return;
+        _refreshDebounceTimer.Stop();
 
         var capsule = _capsuleBounds();
         if (capsule is null)
@@ -232,6 +248,7 @@ internal sealed class BrowserWindowAdapter : IDisposable
     {
         if (_disposed) return;
         _timer.Stop();
+        _refreshDebounceTimer.Stop();
         _ = RestoreAll();
         _disposed = true;
     }

@@ -670,3 +670,23 @@ Research references:
 - **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` now points to the v12 publish EXE, working directory, and icon.
 - **RUNTIME / GUI / scheduled hidden-panel end-to-end: NOT VERIFIED.** The already-running single-instance v11 process was left untouched, so the v12 UI and actual timer-to-toast reminder flow were not launched. The direct Toast smoke test ran without a WPF window; scheduler timing and lifecycle were covered with a recording notifier.
 - The GitHub `v6.0.3` release replacement is pending the source push and release-asset update; no `v6.0.4` release is being created.
+
+## UI motion stutter — local publish v15 (2026-11-18)
+
+### Diagnosis and changes
+
+- The main capsule transition changed the HWND size on every animation frame, while `SizeChanged` and `LocationChanged` also rebuilt capsule geometry, repositioned the docked window, refreshed browser adaptation, and updated persisted placement. Collapsing could reposition the window immediately before the size animation, creating a visible jump.
+- `ApplyDimensions` now computes one target rectangle and animates only the changed `Left`, `Top`, `Width`, and `Height` properties together. A generation-guarded completion handles final geometry, browser refresh, and persistence once; a newer state transition cancels the previous clocks and invalidates their completion callback.
+- Docked/free target placement is calculated without mutating the window during the transition. Size/location handlers skip per-frame side effects, and browser-window adaptation uses a debounced Background-priority refresh.
+- Capsule geometry is cached when audio is inactive or below the visible-motion threshold and is not rebuilt during a dimension transition. The audio timer runs at Render priority only while the visible capsule is in Compact/Hover with audio reactivity and motion enabled. Housekeeping timers use Background priority.
+- `ScreenRegionSelector` now reuses its GDI pen, brush, and font rather than allocating them on each mouse-move repaint. Existing opacity and dimension transition durations were retained; no broad blur/cache effect or storyboard-based animation system was found.
+
+### Verification
+
+- **BUILD VERIFIED:** Windows-client Release build completed with 0 warnings and 0 errors.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **29/29**, including audio analysis throughput, local train reminders, OCR, browser geometry, and other client regressions.
+- **PUBLISH VERIFIED:** self-contained `win-x64` publish completed to `build/NOVA-Taskbar-Release-v15/publish/` with 492 files. The EXE, managed assembly, runtime, native WebRTC DLL, and local train schedule are present; published managed/native DLL hashes match the corresponding Release build artifacts.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` points to the v15 publish EXE, working directory, and icon.
+- **RUNTIME / GUI: NOT VERIFIED.** The already-running single-instance v14 process was left untouched; its mutex prevents an interactive launch of v15 without interrupting the existing session.
+- **FPS / frame-time / CPU profile: NOT VERIFIED.** No reliable frame-time capture was available, so stable 60 FPS is not claimed. Rapid UI transitions, repeated opens, long-session GUI behavior, and mixed-DPI/multi-monitor behavior remain unverified in v15.
+- This is a local-only release. No commit or GitHub push was made.

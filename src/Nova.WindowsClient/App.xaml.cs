@@ -45,7 +45,7 @@ public partial class App : Application
         _window = new ShellWindow(_transferService, reminderScheduler);
         InitializeTray();
         ToastNotificationManagerCompat.OnActivated += _ => Dispatcher.BeginInvoke(new Action(ShowPanel));
-        _trainReminderTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        _trainReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(15) };
         _trainReminderTimer.Tick += (_, _) =>
             reminderScheduler.ProcessDue(DateTimeOffset.UtcNow, reminderNotifier);
         _trainReminderTimer.Start();

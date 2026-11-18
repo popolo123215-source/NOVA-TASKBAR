@@ -34,15 +34,15 @@ public partial class ShellWindow
     private readonly SystemMasterVolumeService _masterVolumeService = new();
     private readonly YandexMusicLyricsService _yandexLyricsService = new();
     private readonly ObservableCollection<TimedLyricLine> _lyricsLines = [];
-    private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    private readonly DispatcherTimer _mediaRefreshTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    private readonly DispatcherTimer _audioReactiveTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
-    private readonly DispatcherTimer _timerPulse = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private readonly DispatcherTimer _systemStatsTimer = new() { Interval = TimeSpan.FromSeconds(2) };
-    private readonly DispatcherTimer _weatherRefreshTimer = new() { Interval = TimeSpan.FromMinutes(15) };
-    private readonly DispatcherTimer _masterVolumeRefreshTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    private readonly DispatcherTimer _masterVolumeWriteTimer = new() { Interval = TimeSpan.FromMilliseconds(140) };
-    private readonly DispatcherTimer _hoverCollapseTimer = new() { Interval = TimeSpan.FromMilliseconds(420) };
+    private readonly DispatcherTimer _clockTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _mediaRefreshTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer _audioReactiveTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly DispatcherTimer _timerPulse = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _systemStatsTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _weatherRefreshTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMinutes(15) };
+    private readonly DispatcherTimer _masterVolumeRefreshTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _masterVolumeWriteTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(140) };
+    private readonly DispatcherTimer _hoverCollapseTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(420) };
     private CancellationTokenSource? _weatherCancellation;
     private CancellationTokenSource? _weatherSearchCancellation;
     private CancellationTokenSource? _lyricsCancellation;
@@ -73,17 +73,25 @@ public partial class ShellWindow
     private double _bassWavePhase;
     private double _trebleWavePhase;
     private long _lastAudioUiTimestamp;
-    private string? _audioMeterError;
     private string? _screenDeviceName;
     private string? _overlayScreenDeviceName;
     private double _overlayScale = 1;
     private SystemStatsService.Snapshot? _latestStats;
     private string? _lyricsTrackKey;
+    private double _lastCapsuleGeometryWidth = -1;
+    private double _lastCapsuleGeometryHeight = -1;
+    private PanelState _lastCapsuleGeometryState;
+    private bool _capsuleGeometryIsReactive;
 
     public bool IsGamingOverlayActive => _isGamingOverlay;
 
     private void InitializeIsland()
     {
+        IsVisibleChanged += (_, _) =>
+        {
+            if (_ready)
+                UpdateAudioReactiveUi();
+        };
         _clockTimer.Tick += (_, _) => UpdateClock();
         _mediaRefreshTimer.Tick += async (_, _) => await _mediaService.RefreshSessionAsync();
         _audioReactiveTimer.Tick += (_, _) => UpdateAudioReactiveUi();
@@ -118,11 +126,11 @@ public partial class ShellWindow
         UpdateTimerUi();
         _clockTimer.Start();
         _mediaRefreshTimer.Start();
-        _audioReactiveTimer.Start();
         _timerPulse.Start();
         _systemStatsTimer.Start();
         _weatherRefreshTimer.Start();
         UpdateCapsuleGeometry(0);
+        UpdateAudioReactiveUi();
         _ = InitializeMediaAsync();
         _ = RefreshSystemStatsAsync();
         RefreshWeather();
@@ -490,28 +498,49 @@ public partial class ShellWindow
     private void UpdateAudioReactiveUi()
     {
         if (_islandDisposed) return;
-        var captureEnabled = _enableAudioReactive && !_isGamingOverlay &&
+        var captureEnabled = _enableAudioReactive && _enableMotion && IsVisible && !_isGamingOverlay &&
             (_state is PanelState.Compact or PanelState.Hover);
+        if (captureEnabled)
+        {
+            if (!_audioReactiveTimer.IsEnabled)
+                _audioReactiveTimer.Start();
+        }
+        else
+        {
+            _audioReactiveTimer.Stop();
+            _smoothedAudioLevel = 0;
+            _smoothedAudioBass = 0;
+            _smoothedAudioTreble = 0;
+            _smoothedBeat = 0;
+            _capsuleMotion = 0;
+            _lastAudioUiTimestamp = 0;
+        }
+
         _audioMeterService.SetEnabled(captureEnabled);
         var sample = _audioMeterService.Sample();
         if (sample.Error is { Length: > 0 } error)
         {
-            if (!string.Equals(_audioMeterError, error, StringComparison.Ordinal))
-                AudioVisualizationStatusText.Text = $"Аудиореактивность WASAPI недоступна: {error}";
-            _audioMeterError = error;
+            SetAudioVisualizationStatus($"Аудиореактивность WASAPI недоступна: {error}");
         }
         else
         {
-            _audioMeterError = null;
-            AudioVisualizationStatusText.Text = captureEnabled
+            SetAudioVisualizationStatus(captureEnabled
                 ? "WASAPI анализирует громкость, басы, высокие частоты и резкие пики общего аудиомикса."
-                : _state == PanelState.Fullscreen
-                    ? "Аудиореактивность капсулы приостановлена в рабочем пространстве."
+                : !_enableMotion
+                    ? "Плавные анимации выключены в настройках."
                     : !_enableAudioReactive
                         ? "Аудиоанимация выключена в настройках."
                         : _isGamingOverlay
                             ? "Аудиореактивность приостановлена в игровом оверлее."
-                            : "Аудиореактивность приостановлена.";
+                            : (!IsVisible || _state is PanelState.Expanded or PanelState.Fullscreen)
+                                ? "Аудиореактивность капсулы приостановлена в рабочем пространстве."
+                                : "Аудиореактивность приостановлена.");
+        }
+
+        if (!captureEnabled)
+        {
+            UpdateCapsuleGeometry(0);
+            return;
         }
 
         var elapsed = _lastAudioUiTimestamp == 0
@@ -538,6 +567,12 @@ public partial class ShellWindow
         UpdateCapsuleGeometry((float)(_capsuleMotion * _audioReactiveIntensity));
     }
 
+    private void SetAudioVisualizationStatus(string status)
+    {
+        if (!string.Equals(AudioVisualizationStatusText.Text, status, StringComparison.Ordinal))
+            AudioVisualizationStatusText.Text = status;
+    }
+
     private static float SmoothSignal(float current, float target, double elapsed, double timeConstant)
     {
         var amount = (float)(1 - Math.Exp(-elapsed / timeConstant));
@@ -546,12 +581,25 @@ public partial class ShellWindow
 
     private void UpdateCapsuleGeometry(float motion)
     {
-        if (!IsLoaded || _isGamingOverlay || _state == PanelState.Fullscreen)
+        if (!IsLoaded || _isDimensionsAnimating || _isGamingOverlay || _state == PanelState.Fullscreen)
             return;
 
         var width = PanelSurface.ActualWidth;
         var height = PanelSurface.ActualHeight;
         if (width <= 20 || height <= 20)
+            return;
+
+        var reactiveScale = _enableAudioReactive && _enableMotion && !_isGamingOverlay &&
+            (_state is PanelState.Compact or PanelState.Hover)
+                ? _audioReactiveIntensity
+                : 0;
+        var hasReactiveInput = reactiveScale > 0 &&
+            (_smoothedAudioLevel > 0.001f || _smoothedAudioBass > 0.001f ||
+             _smoothedAudioTreble > 0.001f || _smoothedBeat > 0.001f);
+        if (!hasReactiveInput && !_capsuleGeometryIsReactive &&
+            width == _lastCapsuleGeometryWidth &&
+            height == _lastCapsuleGeometryHeight &&
+            _state == _lastCapsuleGeometryState)
             return;
 
         const double inset = 7;
@@ -578,9 +626,6 @@ public partial class ShellWindow
         AddLine(points, new Point(inset, bottomCenterY), new Point(inset, topCenterY), new Vector(-1, 0), 8);
         AddArc(points, new Point(left, topCenterY), radius, Math.PI, Math.PI * 1.5, new Vector(0, -1), 8, includeEnd: false);
 
-        var reactiveScale = _enableAudioReactive && _enableMotion && !_isGamingOverlay
-            ? _audioReactiveIntensity
-            : 0;
         for (var index = 0; index < points.Count; index++)
         {
             var point = points[index];
@@ -620,6 +665,10 @@ public partial class ShellWindow
         CapsuleGlowPath.Data = geometry;
         CapsuleGlowPath.Opacity = Math.Clamp(0.13 + motion * 0.25, 0.13, 0.72);
         CapsuleGlowPath.StrokeThickness = 5 + Math.Min(6, Math.Max(0, motion) * 3.2);
+        _lastCapsuleGeometryWidth = width;
+        _lastCapsuleGeometryHeight = height;
+        _lastCapsuleGeometryState = _state;
+        _capsuleGeometryIsReactive = hasReactiveInput;
     }
 
     private static void AddLine(List<SurfacePoint> points, Point start, Point end, Vector normal, int segments)
@@ -1204,6 +1253,7 @@ public partial class ShellWindow
         var workBottom = (work.Top + work.Height) / scale.Y;
         var firstUse = string.IsNullOrWhiteSpace(_preferences.OverlayScreenDevice);
         _isGamingOverlay = true;
+        UpdateAudioReactiveUi();
         UpdateSettingsOptionUi();
         _overlayEditMode = false;
         CompactView.Visibility = Visibility.Collapsed;
@@ -1260,8 +1310,6 @@ public partial class ShellWindow
         GamingOverlayView.Visibility = Visibility.Collapsed;
         RestorePanelSurface();
         SetState(PanelState.Compact);
-        if (_dockEdge is not null) PositionAtEdge(_dockEdge);
-        else RestoreFreePosition();
         Show();
         Activate();
         UpdateSettingsOptionUi();
@@ -1278,8 +1326,6 @@ public partial class ShellWindow
         Topmost = _keepOnTop;
         MinWidth = 380;
         MinHeight = 64;
-        ApplyDimensions();
-        UpdateCapsuleGeometry(_capsuleMotion);
     }
 
     private Forms.Screen CurrentOverlayScreen()
@@ -1428,7 +1474,16 @@ public partial class ShellWindow
         return (fallbackDpi.DpiScaleX, fallbackDpi.DpiScaleY);
     }
 
-    private void PositionAtEdge(string edge)
+    private void PositionAtEdge(string edge, double? targetWidth = null, double? targetHeight = null)
+    {
+        var actualWidth = targetWidth ?? (ActualWidth > 0 ? ActualWidth : Width);
+        var actualHeight = targetHeight ?? (ActualHeight > 0 ? ActualHeight : Height);
+        var position = GetPositionAtEdge(edge, actualWidth, actualHeight);
+        Left = position.Left;
+        Top = position.Top;
+    }
+
+    private (double Left, double Top) GetPositionAtEdge(string edge, double actualWidth, double actualHeight)
     {
         var screen = CurrentScreen();
         var scale = GetScreenScale(screen);
@@ -1442,23 +1497,31 @@ public partial class ShellWindow
         var workTop = work.Top / scale.Y;
         var workWidth = work.Width / scale.X;
         var workHeight = work.Height / scale.Y;
-        var actualWidth = ActualWidth > 0 ? ActualWidth : Width;
-        var actualHeight = ActualHeight > 0 ? ActualHeight : Height;
-        Left = edge switch
+        var targetLeft = edge switch
         {
             "left" => workLeft + 10,
             "right" => workLeft + workWidth - actualWidth - 10,
             _ => left + (width - actualWidth) / 2
         };
-        Top = edge switch
+        var targetTop = edge switch
         {
             "bottom" => workTop + workHeight - actualHeight - 10,
             "left" or "right" => top + (height - actualHeight) / 2,
             _ => top + 8
         };
+        return (targetLeft, targetTop);
     }
 
     private void RestoreFreePosition(double? targetWidth = null, double? targetHeight = null)
+    {
+        var actualWidth = targetWidth ?? (ActualWidth > 0 ? ActualWidth : Width);
+        var actualHeight = targetHeight ?? (ActualHeight > 0 ? ActualHeight : Height);
+        var position = GetFreePosition(actualWidth, actualHeight);
+        Left = position.Left;
+        Top = position.Top;
+    }
+
+    private (double Left, double Top) GetFreePosition(double targetWidth, double targetHeight)
     {
         var screen = CurrentScreen();
         var scale = GetScreenScale(screen);
@@ -1469,10 +1532,11 @@ public partial class ShellWindow
         var bottom = (bounds.Top + bounds.Height) / scale.Y;
         var maxWidth = Math.Max(1, right - left);
         var maxHeight = Math.Max(1, bottom - top);
-        var width = Math.Clamp(targetWidth ?? (ActualWidth > 0 ? ActualWidth : Width), 1, maxWidth);
-        var height = Math.Clamp(targetHeight ?? (ActualHeight > 0 ? ActualHeight : Height), 1, maxHeight);
-        Left = _preferences.Left < 0 ? right - width - 10 : Math.Clamp(_preferences.Left, left, right - width);
-        Top = _preferences.Top < 0 ? top + 8 : Math.Clamp(_preferences.Top, top, bottom - height);
+        var width = Math.Clamp(targetWidth, 1, maxWidth);
+        var height = Math.Clamp(targetHeight, 1, maxHeight);
+        return (
+            _preferences.Left < 0 ? right - width - 10 : Math.Clamp(_preferences.Left, left, right - width),
+            _preferences.Top < 0 ? top + 8 : Math.Clamp(_preferences.Top, top, bottom - height));
     }
 
     private static bool IsInteractiveSource(DependencyObject? source)

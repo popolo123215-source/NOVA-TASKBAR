@@ -35,7 +35,9 @@ public partial class ShellWindow : Window
     private PanelState _stateBeforeFullscreen = PanelState.Expanded;
     private bool _allowClose;
     private bool _ready;
+    private bool _isDimensionsAnimating;
     private bool _loadingTransportPreference;
+    private int _dimensionsAnimationVersion;
     private double _sizeScale = 1;
     private string? _dockEdge;
     private PanelPreferences _preferences = PanelPreferences.Defaults;
@@ -94,11 +96,11 @@ public partial class ShellWindow : Window
         InitializeTrainScheduleUi();
         _browserWindowAdapter = new BrowserWindowAdapter(GetCapsuleBoundsForAdaptation);
         _browserWindowAdapter.StatusChanged += status => BrowserAdaptationStatusText.Text = status;
-        _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _settingsSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(350) };
         _settingsSaveTimer.Tick += (_, _) => { _settingsSaveTimer.Stop(); SavePreferences(); };
-        _deviceRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _deviceRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _deviceRefreshTimer.Tick += (_, _) => RefreshDevices();
-        _obsRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _obsRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _obsRefreshTimer.Tick += async (_, _) => await RefreshObsSnapshotAsync();
         _widgetHost = new WidgetHost(WidgetPages, _widgetRegistry);
         RegisterWidgets();
@@ -503,6 +505,9 @@ public partial class ShellWindow : Window
     {
         _preferences = PanelPreferences.Load();
         _screenDeviceName = _preferences.ScreenDevice;
+        _dockEdge = _preferences.DockEdge is "top" or "bottom" or "left" or "right"
+            ? _preferences.DockEdge
+            : null;
         _workspaceScreenDeviceName = _preferences.WorkspaceScreenDevice;
         _workspaceLeft = _preferences.WorkspaceLeft;
         _workspaceTop = _preferences.WorkspaceTop;
@@ -595,12 +600,14 @@ public partial class ShellWindow : Window
         RefreshDevices();
         RefreshHistory();
         _deviceRefreshTimer.Start();
+        var initialWidth = 520 * _sizeScale;
+        var initialHeight = 78 * _sizeScale;
+        if (_dockEdge is { } dockEdge)
+            PositionAtEdge(dockEdge, initialWidth, initialHeight);
+        else
+            RestoreFreePosition(initialWidth, initialHeight);
         _ready = true;
         SetState(PanelState.Compact);
-        if (_preferences.DockEdge is "top" or "bottom" or "left" or "right")
-            DockTo(_preferences.DockEdge);
-        else
-            RestoreFreePosition();
         UpdateDockUi();
         StartIslandServices();
         _browserWindowAdapter.SetEnabled(_browserAdaptationEnabled);
@@ -623,22 +630,12 @@ public partial class ShellWindow : Window
             _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
             SavePreferences();
         }
-        else if (previousState == PanelState.Fullscreen)
-        {
-            if (state == PanelState.Expanded)
-                state = _stateBeforeFullscreen;
-            else if (state is PanelState.Compact or PanelState.Hover)
-            {
-                RestoreCapsulePosition(state);
-            }
-        }
-        else if (previousState == PanelState.Expanded && (state is PanelState.Compact or PanelState.Hover))
-        {
-            RestoreCapsulePosition(state);
-        }
+        else if (previousState == PanelState.Fullscreen && state == PanelState.Expanded)
+            state = _stateBeforeFullscreen;
 
         var oldView = CurrentStateView();
         _state = state;
+        UpdateAudioReactiveUi();
         UpdateSurfaceStyle();
         FullscreenToggleButton.Content = _state == PanelState.Fullscreen ? "□  Оконный режим" : "⛶  На весь экран";
         FullscreenToggleButton.ToolTip = _state == PanelState.Fullscreen
@@ -649,7 +646,6 @@ public partial class ShellWindow : Window
             : "F11 — ПОЛНЫЙ ЭКРАН · NOVA";
         WorkspaceResizeGrip.Visibility = _state == PanelState.Expanded ? Visibility.Visible : Visibility.Collapsed;
         var next = CurrentStateView();
-        _browserWindowAdapter.Refresh();
         var views = new[] { CompactView, MainView, ExpandedView };
         if (!_enableMotion)
         {
@@ -660,7 +656,6 @@ public partial class ShellWindow : Window
                 view.Opacity = 1;
             }
             ApplyDimensions();
-            UpdateCapsuleGeometry(_capsuleMotion);
             SchedulePreferenceSave();
             return;
         }
@@ -670,7 +665,6 @@ public partial class ShellWindow : Window
             next.Visibility = Visibility.Visible;
             next.Opacity = 1;
             ApplyDimensions();
-            UpdateCapsuleGeometry(_capsuleMotion);
             SchedulePreferenceSave();
             return;
         }
@@ -706,7 +700,6 @@ public partial class ShellWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         });
         ApplyDimensions();
-        UpdateCapsuleGeometry(_capsuleMotion);
         SchedulePreferenceSave();
     }
 
@@ -716,6 +709,12 @@ public partial class ShellWindow : Window
         var fromHeight = ActualHeight > 0 ? ActualHeight : Height;
         var fromLeft = Left;
         var fromTop = Top;
+        var animationVersion = ++_dimensionsAnimationVersion;
+        _isDimensionsAnimating = true;
+        BeginAnimation(WidthProperty, null);
+        BeginAnimation(HeightProperty, null);
+        BeginAnimation(LeftProperty, null);
+        BeginAnimation(TopProperty, null);
         double targetWidth;
         double targetHeight;
         var targetLeft = Left;
@@ -777,32 +776,76 @@ public partial class ShellWindow : Window
             targetHeight = Math.Clamp(targetHeight, MinHeight, maxHeight);
         }
 
-        BeginAnimation(WidthProperty, null);
-        BeginAnimation(HeightProperty, null);
-        BeginAnimation(LeftProperty, null);
-        BeginAnimation(TopProperty, null);
-        var duration = TimeSpan.FromMilliseconds(_ready && _enableMotion ? 230 : 0);
-        if (duration == TimeSpan.Zero)
+        if (!_isGamingOverlay && (_state is PanelState.Compact or PanelState.Hover))
         {
-            Width = targetWidth;
-            Height = targetHeight;
-            Left = targetLeft;
-            Top = targetTop;
-            return;
+            var position = _dockEdge is { } edge
+                ? GetPositionAtEdge(edge, targetWidth, targetHeight)
+                : GetFreePosition(targetWidth, targetHeight);
+            targetLeft = position.Left;
+            targetTop = position.Top;
+        }
+
+        var animations = new List<(DependencyProperty Property, double From, double To)>(4);
+        AddDimensionAnimation(WidthProperty, fromWidth, targetWidth);
+        AddDimensionAnimation(HeightProperty, fromHeight, targetHeight);
+        AddDimensionAnimation(LeftProperty, fromLeft, targetLeft);
+        AddDimensionAnimation(TopProperty, fromTop, targetTop);
+
+        void AddDimensionAnimation(DependencyProperty property, double from, double to)
+        {
+            if (Math.Abs(from - to) > 0.1)
+                animations.Add((property, from, to));
         }
 
         Width = targetWidth;
         Height = targetHeight;
         Left = targetLeft;
         Top = targetTop;
-        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-        BeginAnimation(WidthProperty, new DoubleAnimation(fromWidth, targetWidth, duration) { EasingFunction = easing });
-        BeginAnimation(HeightProperty, new DoubleAnimation(fromHeight, targetHeight, duration) { EasingFunction = easing });
-        if (_state is PanelState.Expanded or PanelState.Fullscreen)
+        var duration = TimeSpan.FromMilliseconds(_ready && _enableMotion ? 230 : 0);
+        if (duration == TimeSpan.Zero || animations.Count == 0)
         {
-            BeginAnimation(LeftProperty, new DoubleAnimation(fromLeft, targetLeft, duration) { EasingFunction = easing });
-            BeginAnimation(TopProperty, new DoubleAnimation(fromTop, targetTop, duration) { EasingFunction = easing });
+            CompleteDimensionsChange(animationVersion);
+            return;
         }
+
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        for (var index = 0; index < animations.Count; index++)
+        {
+            var (property, from, to) = animations[index];
+            var animation = new DoubleAnimation(from, to, duration) { EasingFunction = easing };
+            if (index == animations.Count - 1)
+                animation.Completed += (_, _) => CompleteDimensionsChange(animationVersion);
+            BeginAnimation(property, animation);
+        }
+    }
+
+    private void CompleteDimensionsChange(int animationVersion)
+    {
+        if (animationVersion != _dimensionsAnimationVersion)
+            return;
+
+        _isDimensionsAnimating = false;
+        if (_ready && !_isGamingOverlay)
+        {
+            if (_state == PanelState.Expanded)
+            {
+                _workspaceLeft = Left;
+                _workspaceTop = Top;
+                _workspaceWidth = ActualWidth;
+                _workspaceHeight = ActualHeight;
+                _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+            }
+            else if (_state is PanelState.Compact or PanelState.Hover)
+            {
+                _screenDeviceName = ScreenAtWindow().DeviceName;
+                _preferences = _preferences with { Left = Left, Top = Top, ScreenDevice = _screenDeviceName };
+            }
+        }
+
+        UpdateCapsuleGeometry(_capsuleMotion);
+        _browserWindowAdapter.ScheduleRefresh();
+        if (_ready)
+            SchedulePreferenceSave();
     }
 
     private FrameworkElement CurrentStateView() =>
@@ -840,19 +883,6 @@ public partial class ShellWindow : Window
         var current = ScreenAtWindow();
         _workspaceScreenDeviceName = current.DeviceName;
         return current;
-    }
-
-    private void RestoreCapsulePosition(PanelState state)
-    {
-        _screenDeviceName = _preferences.ScreenDevice;
-        if (_dockEdge is not null)
-        {
-            PositionAtEdge(_dockEdge);
-            return;
-        }
-
-        var size = state == PanelState.Compact ? (Width: 520d, Height: 78d) : (Width: 620d, Height: 190d);
-        RestoreFreePosition(size.Width * _sizeScale, size.Height * _sizeScale);
     }
 
     private void SetExpandedSection(string section)
@@ -1701,12 +1731,15 @@ public partial class ShellWindow : Window
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        UpdateCapsuleGeometry(_capsuleMotion);
-        _browserWindowAdapter.Refresh();
+        if (!_isDimensionsAnimating)
+        {
+            UpdateCapsuleGeometry(_capsuleMotion);
+            _browserWindowAdapter.ScheduleRefresh();
+        }
         if (_isGamingOverlay) return;
-        if ((_state is PanelState.Compact or PanelState.Hover) && _dockEdge is not null)
+        if (!_isDimensionsAnimating && (_state is PanelState.Compact or PanelState.Hover) && _dockEdge is not null)
             PositionAtEdge(_dockEdge);
-        if (_state == PanelState.Expanded && _ready)
+        if (_state == PanelState.Expanded && _ready && !_isDimensionsAnimating)
         {
             _workspaceWidth = Width;
             _workspaceHeight = Height;
@@ -1716,7 +1749,8 @@ public partial class ShellWindow : Window
 
     private void Window_LocationChanged(object? sender, EventArgs e)
     {
-        _browserWindowAdapter.Refresh();
+        if (_isDimensionsAnimating) return;
+        _browserWindowAdapter.ScheduleRefresh();
         if (!_ready || _isGamingOverlay || _state == PanelState.Fullscreen) return;
         if (_state == PanelState.Expanded)
         {
