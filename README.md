@@ -4,7 +4,7 @@ NOVA TaskBar is the Windows companion surface for the NOVA device ecosystem. Thi
 
 ## Download and run on Windows
 
-For a ready-to-run build, open [GitHub Releases](https://github.com/popolo123215-source/NOVA-TASKBAR/releases/latest) and download the latest `NOVA-Taskbar-v6.0.3-win-x64.zip`. Extract the whole archive, then run `Nova.TaskBar.exe` from the extracted folder. Keep the adjacent files together; the EXE is not a standalone single-file build.
+For a ready-to-run build, open [GitHub Releases](https://github.com/popolo123215-source/NOVA-TASKBAR/releases/latest) and download the latest `NOVA-Taskbar-v6.0.4-win-x64.zip`. Extract the whole archive, then run `Nova.TaskBar.exe` from the extracted folder. Keep the adjacent files together; the EXE is not a standalone single-file build.
 
 The release is self-contained and includes the .NET runtime. It requires Windows 10 version 2004 (build 19041) or later, x64. The app starts in the compact NOVA capsule and adds an icon to the system tray; use the tray icon to restore the panel or exit.
 
