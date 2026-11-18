@@ -46,7 +46,8 @@ internal sealed record PanelPreferences(
     bool? ShowCapsulePlaybackStatus = null,
     bool? ShowCapsuleNetwork = null,
     bool? ShowCapsuleVpn = null,
-    string? CapsuleContentOrder = null)
+    string? CapsuleContentOrder = null,
+    double? WidgetIconSize = null)
 {
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

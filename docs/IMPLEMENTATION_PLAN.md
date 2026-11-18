@@ -705,3 +705,93 @@ Research references:
 - **PUBLISH VERIFIED:** GitHub release API reports both assets as uploaded. The archive was downloaded back from GitHub; its size and SHA-256 matched the local ZIP, and extraction produced all 492 files with version metadata `6.0.4`.
 - **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` points to the v6.0.4 publish EXE, working directory, and icon.
 - **RUNTIME / GUI: NOT VERIFIED.** The already-running single-instance v14 app was left untouched, so the v6.0.4 EXE was not launched interactively. Stable 60 FPS and long-session UI behavior are not claimed.
+
+## Adaptive Shutter 2.0 — local v6.0.5 build (2026-11-18)
+
+- Added Compact, Normal, and Expanded shell states. Normal and Expanded share the selected widget host; Expanded retains a resizable workspace with a 900×620 DIP minimum when the available work area permits it.
+- Added icon-based widget navigation with active/hover states and adaptive horizontal/vertical workspace layout. Compact content and workspace orientation follow the dock edge.
+- Added 32-DIP magnetic edge snapping, positioning inside the Windows work area, and layout refresh on display/DPI changes. Existing panel preferences continue to store the selected widget, dock edge, screen, and workspace geometry in `settings.json`.
+- Bumped the Windows client product version to `6.0.5`. Published locally as a self-contained `win-x64` package at `build/NOVA-Taskbar-Release-v6.0.5/publish/`; the ZIP contains 492 entries and is accompanied by a SHA-256 sidecar. This local build was **not** uploaded to GitHub.
+- Updated the existing desktop shortcut to target the v6.0.5 publish EXE and use its directory and icon.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug test-project build completed with 0 warnings and 0 errors; self-contained Release `dotnet publish` completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **30/30**, including dock orientation/snap geometry and the existing schedule/reminder coverage.
+- **PACKAGE VERIFIED:** The ZIP was extracted to a temporary directory and checked for the application, runtime, native WebRTC DLL, and local train schedule. Extracted product version is `6.0.5`; the SHA-256 matches the sidecar. Temporary verification files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets `build\NOVA-Taskbar-Release-v6.0.5\publish\Nova.TaskBar.exe` and uses the matching working directory and icon.
+- **RUNTIME / GUI: NOT VERIFIED.** The existing v15 single-instance process (PID 35008) was left running and not interrupted; GUI transition, docking, and repeated-open scenarios were therefore not exercised against v6.0.5.
+- **MULTI-MONITOR / MIXED DPI / FPS: NOT VERIFIED.** Geometry is bounded to the Windows working area and handles display/DPI notifications, but physical multi-monitor and mixed-DPI scenarios, frame time, and sustained 60 FPS were not measured.
+
+## Widget navigation and slim scrollbars — local v6.0.6 build (2026-11-18)
+
+- Removed both horizontal and vertical scrolling from the widget navigation strip. Reduced its default buttons from 54×44 to 27×22 DIP; selected and hover widths are 56 and 64 DIP. The glyphs were reduced to 12 DIP while preserving readable labels and tooltips.
+- Applied a window-wide scrollbar template: a narrow translucent rail with a centered circular thumb, including horizontal orientation. Thumb dragging, wheel input, and track paging remain available in scrollable widget content.
+- Bumped the Windows client product version to `6.0.6`; generated a self-contained local `win-x64` publish and 492-entry ZIP. Updated the existing desktop shortcut. The build was **not** pushed to GitHub.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug tests build/run succeeded; self-contained Release publish completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **30/30**.
+- **PACKAGE VERIFIED:** The ZIP was extracted and checked for the application, runtime, native WebRTC DLL, and local train schedule. Product version `6.0.6` and SHA-256 sidecar matched; temporary extraction files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets the v6.0.6 publish EXE, working directory, and icon.
+- **GUI: NOT VERIFIED.** A v6.0.5 single-instance NOVA window was already running and was left untouched, so the new scrollbar and navigation appearance could not be visually exercised.
+
+## Dock orientation and widget icon scale — local v6.0.7 build (2026-11-18)
+
+- Changed edge orientation consistently across Compact, Normal, and Expanded: top/bottom docks use a horizontal layout; left/right docks use a vertical layout. Dock dimensions, capsule layout, workspace navigation, and dock status text now agree.
+- Increased widget navigation glyphs from 12 to 14.4 DIP (**+20%**).
+- Bumped the Windows client product version to `6.0.7`, created a self-contained local `win-x64` publish and 492-entry ZIP, and updated the desktop shortcut. The build was **not** pushed to GitHub.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug test build and self-contained Release publish completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **30/30**, including the four-edge orientation assertion.
+- **PACKAGE VERIFIED:** The ZIP was extracted and checked for the application, runtime, native WebRTC DLL, and local train schedule. Product version `6.0.7` and SHA-256 sidecar matched; temporary extraction files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets the v6.0.7 publish EXE, working directory, and icon.
+- **GUI: NOT VERIFIED.** A v6.0.5 single-instance NOVA window was already running and was not interrupted; orientation and icon scale were not visually exercised.
+
+## Widget controls enlarged — local v6.0.8 build (2026-11-18)
+
+- Doubled widget navigation button dimensions from 27×22 to 54×44 DIP and glyph size from 14.4 to 28.8 DIP. The selected/hovered widths were increased to 108/118 DIP, and the vertical navigation host was widened to keep the larger controls inside the panel.
+- Bumped the Windows client product version to `6.0.8`, created a self-contained local `win-x64` publish and 492-entry ZIP, and updated the desktop shortcut. The build was **not** pushed to GitHub.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug test build and self-contained Release publish completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **30/30**.
+- **PACKAGE VERIFIED:** The ZIP was extracted and checked for the application, runtime, native WebRTC DLL, and local train schedule. Product version `6.0.8` and SHA-256 sidecar matched; temporary extraction files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets the v6.0.8 publish EXE, working directory, and icon.
+- **GUI: NOT VERIFIED.** A v6.0.5 single-instance NOVA window was already running and was not interrupted; the larger controls were not visually exercised.
+
+## Widget icon dimensions — local v6.0.9 build (2026-11-18)
+
+- Set standard widget navigation buttons to **56×48 DIP** and glyphs to **24 DIP**. Selected and hovered buttons expand to 100 and 110 DIP wide to show their titles while keeping the horizontal strip within the available width.
+- Bumped the Windows client product version to `6.0.9`, created a self-contained local `win-x64` publish and 492-entry ZIP, and updated the desktop shortcut. The build was **not** pushed to GitHub.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug test build and self-contained Release publish completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **30/30**.
+- **PACKAGE VERIFIED:** The ZIP was extracted and checked for the application, runtime, native WebRTC DLL, and local train schedule. Product version `6.0.9` and SHA-256 sidecar matched; temporary extraction files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets the v6.0.9 publish EXE, working directory, and icon.
+- **GUI: NOT VERIFIED.** The active NOVA 6.0.5 instance was not interrupted; exact button and glyph sizing was not visually exercised.
+
+## Widget icon size setting — local v6.0.10 build (2026-11-18)
+
+- Added an Appearance setting for widget icon size from **20 to 50 DIP** in 1-DIP increments. The current value is shown beside the slider and updates all widget glyphs immediately; navigation button height grows as needed for larger icons.
+- Persisted the value in the existing `settings.json` preferences. Older settings without this property continue to use 24 DIP, and loaded/out-of-range values are clamped to 20–50 DIP.
+- Bumped the Windows client product version to `6.0.10`, created a self-contained local `win-x64` publish and 492-entry ZIP, and updated the desktop shortcut. The build was **not** pushed to GitHub.
+
+### Verification
+
+- **BUILD VERIFIED:** Debug test build and self-contained Release publish completed successfully.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **31/31**, including minimum/maximum icon-size and navigation-height coverage.
+- **PACKAGE VERIFIED:** The ZIP was extracted and checked for the application, runtime, native WebRTC DLL, and local train schedule. Product version `6.0.10` and SHA-256 sidecar matched; temporary extraction files were removed.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` targets the v6.0.10 publish EXE, working directory, and icon.
+- **GUI: NOT VERIFIED.** The new slider and persistence across an interactive app restart were not visually exercised.
+
+## Public release version alignment — v6.0.5 (2026-11-18)
+
+- GitHub's latest published version was `v6.0.4`; no `v6.0.5` tag or release existed. The current working tree had advanced to local-only product versions through `6.0.10`. For the explicitly requested next public release, the product version is aligned to `6.0.5` while retaining the current code.
+- The self-contained `win-x64` Release publish completed, and the Debug and Release Windows-client test runs each passed **31/31**.

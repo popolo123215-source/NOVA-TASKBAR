@@ -30,7 +30,7 @@ namespace Nova.WindowsClient;
 
 public partial class ShellWindow : Window
 {
-    private enum PanelState { Compact, Hover, Expanded, Fullscreen }
+    private enum PanelState { Compact, Normal, Expanded, Fullscreen }
     private PanelState _state = PanelState.Compact;
     private PanelState _stateBeforeFullscreen = PanelState.Expanded;
     private bool _allowClose;
@@ -39,6 +39,7 @@ public partial class ShellWindow : Window
     private bool _loadingTransportPreference;
     private int _dimensionsAnimationVersion;
     private double _sizeScale = 1;
+    private double _widgetIconSize = 24;
     private string? _dockEdge;
     private PanelPreferences _preferences = PanelPreferences.Defaults;
     private bool _keepOnTop = true;
@@ -62,6 +63,7 @@ public partial class ShellWindow : Window
     private bool _showOverlayGpu = true;
     private bool _showOverlayRam = true;
     private readonly DispatcherTimer _settingsSaveTimer;
+    private readonly DispatcherTimer _displayRefreshTimer;
     private readonly DispatcherTimer _deviceRefreshTimer;
     private readonly DispatcherTimer _obsRefreshTimer;
     private readonly LocalTransferService _transferService;
@@ -87,6 +89,10 @@ public partial class ShellWindow : Window
     private ObsWebSocketClient? _obsClient;
     private bool _browserAdaptationEnabled;
     private bool _obsSnapshotInProgress;
+    private bool? _workspaceIsVertical;
+    private bool? _compactIsVertical;
+    private bool _displaySettingsSubscribed;
+    private HwndSource? _windowSource;
 
     internal ShellWindow(LocalTransferService transferService, TrainReminderScheduler trainReminderScheduler)
     {
@@ -98,6 +104,12 @@ public partial class ShellWindow : Window
         _browserWindowAdapter.StatusChanged += status => BrowserAdaptationStatusText.Text = status;
         _settingsSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(350) };
         _settingsSaveTimer.Tick += (_, _) => { _settingsSaveTimer.Stop(); SavePreferences(); };
+        _displayRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(160) };
+        _displayRefreshTimer.Tick += (_, _) =>
+        {
+            _displayRefreshTimer.Stop();
+            RefreshDisplayLayout();
+        };
         _deviceRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _deviceRefreshTimer.Tick += (_, _) => RefreshDevices();
         _obsRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
@@ -493,7 +505,7 @@ public partial class ShellWindow : Window
 
     private Rectangle? GetCapsuleBoundsForAdaptation()
     {
-        if (!_ready || _isGamingOverlay || !IsVisible || _state is not (PanelState.Compact or PanelState.Hover))
+        if (!_ready || _isGamingOverlay || !IsVisible || _state != PanelState.Compact)
             return null;
         var handle = new WindowInteropHelper(this).Handle;
         if (handle == IntPtr.Zero || !GetWindowRect(handle, out var bounds))
@@ -503,6 +515,15 @@ public partial class ShellWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        if (!_displaySettingsSubscribed)
+        {
+            SystemEvents.DisplaySettingsChanged += DisplaySettingsChanged;
+            _displaySettingsSubscribed = true;
+            var handle = new WindowInteropHelper(this).Handle;
+            _windowSource = HwndSource.FromHwnd(handle);
+            _windowSource?.AddHook(WindowMessageHook);
+        }
+
         _preferences = PanelPreferences.Load();
         _screenDeviceName = _preferences.ScreenDevice;
         _dockEdge = _preferences.DockEdge is "top" or "bottom" or "left" or "right"
@@ -511,8 +532,8 @@ public partial class ShellWindow : Window
         _workspaceScreenDeviceName = _preferences.WorkspaceScreenDevice;
         _workspaceLeft = _preferences.WorkspaceLeft;
         _workspaceTop = _preferences.WorkspaceTop;
-        _workspaceWidth = Math.Clamp(_preferences.WorkspaceWidth ?? 1040, 820, 1600);
-        _workspaceHeight = Math.Clamp(_preferences.WorkspaceHeight ?? 700, 560, 1200);
+        _workspaceWidth = Math.Clamp(_preferences.WorkspaceWidth ?? 1040, 900, 1600);
+        _workspaceHeight = Math.Clamp(_preferences.WorkspaceHeight ?? 700, 620, 1200);
         var savedWidgetId = _preferences.SelectedWidget == "System" ? "Monitoring" : _preferences.SelectedWidget;
         var savedWidget = _widgetRegistry.Widgets.Any(widget => widget.Id == savedWidgetId)
             ? savedWidgetId!
@@ -523,6 +544,8 @@ public partial class ShellWindow : Window
         WeatherSearchResults.ItemsSource = _weatherLocations;
         CityBox.Text = _selectedWeatherLocation?.Name ?? _preferences.City;
         _sizeScale = Math.Clamp(_preferences.SizeScale, 0.75, 1.1);
+        _widgetIconSize = Math.Clamp(_preferences.WidgetIconSize ?? 24, 20, 50);
+        _widgetRegistry.SetIconSize(_widgetIconSize);
         _overlayScale = Math.Clamp(_preferences.OverlayScale, 0.8, 1.6);
         _keepOnTop = _preferences.KeepOnTop ?? true;
         _hoverExpandEnabled = _preferences.HoverExpandEnabled ?? true;
@@ -550,6 +573,7 @@ public partial class ShellWindow : Window
         _systemStatsTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_preferences.SystemRefreshSeconds ?? 2, 1, 10));
         Topmost = _keepOnTop;
         SizeSlider.Value = _sizeScale;
+        WidgetIconSizeSlider.Value = _widgetIconSize;
         OverlaySizeSlider.Value = _overlayScale;
         KeepOnTopCheckBox.IsChecked = _keepOnTop;
         HoverExpandCheckBox.IsChecked = _hoverExpandEnabled;
@@ -581,6 +605,7 @@ public partial class ShellWindow : Window
         ShowOverlayRamCheckBox.IsChecked = _showOverlayRam;
         BrowserAdaptationCheckBox.IsChecked = _browserAdaptationEnabled;
         UpdateDockUi();
+        UpdateAdaptiveLayout();
         UpdateSettingsOptionUi();
         UpdateOverlayMetricVisibility();
         UpdateCompactCapsuleContent();
@@ -621,13 +646,16 @@ public partial class ShellWindow : Window
         var previousState = _state;
         if (state == PanelState.Fullscreen)
         {
-            if (previousState != PanelState.Expanded) return;
+            if (previousState is not (PanelState.Normal or PanelState.Expanded)) return;
             _stateBeforeFullscreen = previousState;
-            _workspaceLeft = Left;
-            _workspaceTop = Top;
-            _workspaceWidth = Width;
-            _workspaceHeight = Height;
-            _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+            if (_dockEdge is null)
+            {
+                _workspaceLeft = Left;
+                _workspaceTop = Top;
+                _workspaceWidth = Width;
+                _workspaceHeight = Height;
+                _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+            }
             SavePreferences();
         }
         else if (previousState == PanelState.Fullscreen && state == PanelState.Expanded)
@@ -635,18 +663,28 @@ public partial class ShellWindow : Window
 
         var oldView = CurrentStateView();
         _state = state;
+        UpdateAdaptiveLayout();
         UpdateAudioReactiveUi();
         UpdateSurfaceStyle();
         FullscreenToggleButton.Content = _state == PanelState.Fullscreen ? "□  Оконный режим" : "⛶  На весь экран";
         FullscreenToggleButton.ToolTip = _state == PanelState.Fullscreen
             ? "Вернуться в раскрытую панель"
             : "Открыть полноэкранное пространство";
+        WorkspaceModeToggleButton.Visibility = _state is PanelState.Normal or PanelState.Expanded
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        WorkspaceModeToggleButton.Content = _state == PanelState.Normal ? "⤢" : "⤡";
+        WorkspaceModeToggleButton.ToolTip = _state == PanelState.Normal
+            ? "Расширить рабочее пространство"
+            : "Перейти в обычный режим";
         WorkspaceFooterText.Text = _state == PanelState.Fullscreen
             ? "F11 ИЛИ ESC — ВЫЙТИ ИЗ ПОЛНОГО ЭКРАНА"
             : "F11 — ПОЛНЫЙ ЭКРАН · NOVA";
-        WorkspaceResizeGrip.Visibility = _state == PanelState.Expanded ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceResizeGrip.Visibility = _state == PanelState.Expanded && _dockEdge is null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         var next = CurrentStateView();
-        var views = new[] { CompactView, MainView, ExpandedView };
+        var views = new[] { CompactView, ExpandedView };
         if (!_enableMotion)
         {
             foreach (var view in views)
@@ -737,46 +775,88 @@ public partial class ShellWindow : Window
             MinWidth = 0;
             MinHeight = 0;
         }
-        else if (_state == PanelState.Expanded)
+        else if (_state is PanelState.Normal or PanelState.Expanded)
         {
-            var screen = CurrentWorkspaceScreen();
+            var screen = _dockEdge is null ? CurrentWorkspaceScreen() : CurrentScreen();
             var scale = GetScreenScale(screen);
             var work = screen.WorkingArea;
             var workLeft = work.Left / scale.X;
             var workTop = work.Top / scale.Y;
             var maxWidth = Math.Max(1, work.Width / scale.X - 24);
             var maxHeight = Math.Max(1, work.Height / scale.Y - 24);
-            MinWidth = Math.Min(820, maxWidth);
-            MinHeight = Math.Min(560, maxHeight);
-            targetWidth = Math.Clamp(_workspaceWidth, MinWidth, maxWidth);
-            targetHeight = Math.Clamp(_workspaceHeight, MinHeight, maxHeight);
+            var vertical = PanelDockGeometry.IsVertical(_dockEdge);
+            if (_state == PanelState.Normal)
+            {
+                var normalSize = _dockEdge switch
+                {
+                    "top" or "bottom" => (W: 920d, H: 520d),
+                    "left" or "right" => (W: 620d, H: 820d),
+                    _ => (W: 820d, H: 560d)
+                };
+                MinWidth = Math.Min(vertical ? 500 : 680, maxWidth);
+                MinHeight = Math.Min(vertical ? 620 : 440, maxHeight);
+                targetWidth = Math.Clamp(normalSize.W * _sizeScale, MinWidth, maxWidth);
+                targetHeight = Math.Clamp(normalSize.H * _sizeScale, MinHeight, maxHeight);
+            }
+            else if (_dockEdge is "top" or "bottom")
+            {
+                MinWidth = Math.Min(820, maxWidth);
+                MinHeight = Math.Min(560, maxHeight);
+                targetWidth = Math.Clamp(1240, MinWidth, maxWidth);
+                targetHeight = Math.Clamp(700, MinHeight, maxHeight);
+            }
+            else if (vertical)
+            {
+                MinWidth = Math.Min(600, maxWidth);
+                MinHeight = Math.Min(620, maxHeight);
+                targetWidth = Math.Clamp(700, MinWidth, maxWidth);
+                targetHeight = Math.Clamp(860, MinHeight, maxHeight);
+            }
+            else
+            {
+                MinWidth = Math.Min(900, maxWidth);
+                MinHeight = Math.Min(620, maxHeight);
+                targetWidth = Math.Clamp(_workspaceWidth, MinWidth, maxWidth);
+                targetHeight = Math.Clamp(_workspaceHeight, MinHeight, maxHeight);
+            }
             var workRight = workLeft + maxWidth;
             var workBottom = workTop + maxHeight;
-            targetLeft = Math.Clamp(_workspaceLeft ?? (workLeft + (maxWidth - targetWidth) / 2), workLeft, workRight - targetWidth);
-            targetTop = Math.Clamp(_workspaceTop ?? (workTop + (maxHeight - targetHeight) / 2), workTop, workBottom - targetHeight);
-            _workspaceWidth = targetWidth;
-            _workspaceHeight = targetHeight;
+            if (_dockEdge is { } edge)
+            {
+                var position = GetPositionAtEdge(edge, targetWidth, targetHeight);
+                targetLeft = position.Left;
+                targetTop = position.Top;
+            }
+            else
+            {
+                targetLeft = Math.Clamp(_workspaceLeft ?? (workLeft + (maxWidth - targetWidth) / 2), workLeft, workRight - targetWidth);
+                targetTop = Math.Clamp(_workspaceTop ?? (workTop + (maxHeight - targetHeight) / 2), workTop, workBottom - targetHeight);
+                _workspaceWidth = targetWidth;
+                _workspaceHeight = targetHeight;
+            }
         }
         else
         {
-            var size = _state switch { PanelState.Compact => (W: 520d, H: 78d), PanelState.Hover => (W: 620d, H: 190d), _ => (W: 760d, H: 520d) };
+            var size = _state == PanelState.Compact && PanelDockGeometry.IsVertical(_dockEdge)
+                ? (W: 190d, H: 320d)
+                : (W: 520d, H: 78d);
             targetWidth = size.W * _sizeScale;
             targetHeight = size.H * _sizeScale;
         }
 
-        if (_isGamingOverlay || _state is PanelState.Compact or PanelState.Hover)
+        if (_isGamingOverlay || _state == PanelState.Compact)
         {
             var targetScreen = _isGamingOverlay ? CurrentOverlayScreen() : CurrentScreen();
             var scale = GetScreenScale(targetScreen);
             var maxWidth = Math.Max(1, targetScreen.WorkingArea.Width / scale.X - 20);
             var maxHeight = Math.Max(1, targetScreen.WorkingArea.Height / scale.Y - 20);
-            MinWidth = Math.Min(_isGamingOverlay ? 160 : 380, maxWidth);
-            MinHeight = Math.Min(_isGamingOverlay ? 50 : 64, maxHeight);
+            MinWidth = Math.Min(_isGamingOverlay ? 160 : (_dockEdge is "left" or "right" ? 170 : 380), maxWidth);
+            MinHeight = Math.Min(_isGamingOverlay ? 50 : (_dockEdge is "left" or "right" ? 260 : 64), maxHeight);
             targetWidth = Math.Clamp(targetWidth, MinWidth, maxWidth);
             targetHeight = Math.Clamp(targetHeight, MinHeight, maxHeight);
         }
 
-        if (!_isGamingOverlay && (_state is PanelState.Compact or PanelState.Hover))
+        if (!_isGamingOverlay && _state == PanelState.Compact)
         {
             var position = _dockEdge is { } edge
                 ? GetPositionAtEdge(edge, targetWidth, targetHeight)
@@ -827,21 +907,26 @@ public partial class ShellWindow : Window
         _isDimensionsAnimating = false;
         if (_ready && !_isGamingOverlay)
         {
-            if (_state == PanelState.Expanded)
+            if ((_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null)
             {
                 _workspaceLeft = Left;
                 _workspaceTop = Top;
-                _workspaceWidth = ActualWidth;
-                _workspaceHeight = ActualHeight;
                 _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+                if (_state == PanelState.Expanded)
+                {
+                    _workspaceWidth = ActualWidth;
+                    _workspaceHeight = ActualHeight;
+                }
             }
-            else if (_state is PanelState.Compact or PanelState.Hover)
+            else if (_state == PanelState.Compact)
             {
                 _screenDeviceName = ScreenAtWindow().DeviceName;
                 _preferences = _preferences with { Left = Left, Top = Top, ScreenDevice = _screenDeviceName };
             }
         }
 
+        if (_state is PanelState.Normal or PanelState.Expanded)
+            UpdateWorkspaceLayout(GetWorkspaceVerticalOrientation(ActualWidth, ActualHeight));
         UpdateCapsuleGeometry(_capsuleMotion);
         _browserWindowAdapter.ScheduleRefresh();
         if (_ready)
@@ -849,7 +934,7 @@ public partial class ShellWindow : Window
     }
 
     private FrameworkElement CurrentStateView() =>
-        _state switch { PanelState.Compact => CompactView, PanelState.Hover => MainView, _ => ExpandedView };
+        _state == PanelState.Compact ? CompactView : ExpandedView;
 
     private void UpdateSurfaceStyle()
     {
@@ -885,19 +970,19 @@ public partial class ShellWindow : Window
         return current;
     }
 
-    private void SetExpandedSection(string section)
+    private void SetExpandedSection(string section, bool expand = true)
     {
         if (section == "System")
             section = "Monitoring";
 
         if (_widgetRegistry.Widgets.Any(widget => widget.Id == section))
         {
-            if (_state != PanelState.Fullscreen) SetState(PanelState.Expanded);
+            if (expand && _state != PanelState.Fullscreen) SetState(PanelState.Expanded);
             SelectWidget(section);
             return;
         }
 
-        SetState(PanelState.Expanded);
+        if (expand && _state != PanelState.Fullscreen) SetState(PanelState.Expanded);
         OverviewContent.Visibility = section == "Overview" ? Visibility.Visible : Visibility.Collapsed;
         SettingsContent.Visibility = section == "Settings" ? Visibility.Visible : Visibility.Collapsed;
         TransferContent.Visibility = section == "Transfer" ? Visibility.Visible : Visibility.Collapsed;
@@ -954,8 +1039,9 @@ public partial class ShellWindow : Window
     }
 
     private void Compact_Click(object sender, RoutedEventArgs e) => SetState(PanelState.Compact);
-    private void CompactOpen_Click(object sender, RoutedEventArgs e) => SetState(PanelState.Hover);
-    private void Main_Click(object sender, RoutedEventArgs e) => SetState(PanelState.Hover);
+    private void CompactOpen_Click(object sender, RoutedEventArgs e) => SetState(PanelState.Normal);
+    private void WorkspaceModeToggle_Click(object sender, RoutedEventArgs e) =>
+        SetState(_state == PanelState.Normal ? PanelState.Expanded : PanelState.Normal);
     private void Expand_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Overview");
     private void Overview_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Overview");
     private void Music_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Music");
@@ -963,7 +1049,7 @@ public partial class ShellWindow : Window
     private void Vpn_Click(object sender, RoutedEventArgs e) => SetExpandedSection("VPN");
     private void Timer_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Timer");
     private void System_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Monitoring");
-    private void HomeIsland_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Overview");
+    private void HomeIsland_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Overview", expand: false);
     private void Transfers_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Transfer");
     private void History_Click(object sender, RoutedEventArgs e) => SetExpandedSection("History");
     private void Remote_Click(object sender, RoutedEventArgs e) => SetExpandedSection("Remote");
@@ -978,7 +1064,7 @@ public partial class ShellWindow : Window
     private void WidgetNavigation_Click(object sender, RoutedEventArgs e)
     {
         if (sender is System.Windows.Controls.Button { Tag: string widgetId })
-            SetExpandedSection(widgetId);
+            SetExpandedSection(widgetId, expand: false);
     }
 
     private void OpenToolWidget_Click(object sender, RoutedEventArgs e)
@@ -1009,7 +1095,7 @@ public partial class ShellWindow : Window
             SetState(PanelState.Expanded);
             e.Handled = true;
         }
-        else if (e.Key == Key.F11 && (_state == PanelState.Expanded || _state == PanelState.Fullscreen))
+        else if (e.Key == Key.F11 && (_state is PanelState.Normal or PanelState.Expanded or PanelState.Fullscreen))
         {
             SetState(_state == PanelState.Fullscreen ? PanelState.Expanded : PanelState.Fullscreen);
             e.Handled = true;
@@ -1018,20 +1104,185 @@ public partial class ShellWindow : Window
 
     private void WorkspaceLayout_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (WidgetNavigationColumn is not null)
-            WidgetNavigationColumn.Width = new GridLength(Math.Clamp(e.NewSize.Width * 0.23, 176, 236));
+        if ((_state is PanelState.Normal or PanelState.Expanded) && !_isDimensionsAnimating)
+            UpdateWorkspaceLayout(GetWorkspaceVerticalOrientation(e.NewSize.Width, e.NewSize.Height));
+    }
+
+    private bool GetWorkspaceVerticalOrientation(double width, double height)
+    {
+        if (PanelDockGeometry.IsVertical(_dockEdge)) return true;
+        if (_dockEdge is "top" or "bottom") return false;
+        if (_state == PanelState.Normal) return false;
+        if (_state == PanelState.Compact)
+        {
+            width = _workspaceWidth;
+            height = _workspaceHeight;
+        }
+        return _workspaceIsVertical == true
+            ? height > width * 0.92
+            : height > width * 1.08;
+    }
+
+    private void UpdateAdaptiveLayout()
+    {
+        UpdateWorkspaceLayout(GetWorkspaceVerticalOrientation(ActualWidth, ActualHeight));
+        var compactVertical = PanelDockGeometry.IsVertical(_dockEdge);
+        if (_compactIsVertical == compactVertical) return;
+
+        _compactIsVertical = compactVertical;
+        CapsuleContentGrid.RowDefinitions.Clear();
+        CapsuleContentGrid.ColumnDefinitions.Clear();
+        var blocks = new UIElement[] { CapsuleClockBlock, CapsuleWeatherBlock, CompactMediaButton, CapsuleStatusBlock };
+        if (compactVertical)
+        {
+            CapsuleContentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            for (var index = 0; index < blocks.Length; index++)
+            {
+                CapsuleContentGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid.SetRow(blocks[index], index);
+                Grid.SetColumn(blocks[index], 0);
+            }
+            CapsuleContentGrid.VerticalAlignment = VerticalAlignment.Center;
+            CompactView.Margin = new Thickness(10, 18, 10, 18);
+            CapsuleClockBlock.Margin = new Thickness(0, 0, 0, 4);
+            CapsuleWeatherBlock.Margin = new Thickness(0, 0, 0, 4);
+            CompactMediaButton.Margin = new Thickness(0, 0, 0, 4);
+            CapsuleStatusBlock.Margin = new Thickness(0);
+        }
+        else
+        {
+            CapsuleContentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            CapsuleContentGrid.VerticalAlignment = VerticalAlignment.Stretch;
+            for (var index = 0; index < blocks.Length; index++)
+            {
+                CapsuleContentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                Grid.SetRow(blocks[index], 0);
+                Grid.SetColumn(blocks[index], index);
+            }
+            CompactView.Margin = new Thickness(18, 10, 18, 10);
+            CapsuleClockBlock.Margin = new Thickness(0, 0, 7, 0);
+            CapsuleWeatherBlock.Margin = new Thickness(0, 0, 5, 0);
+            CompactMediaButton.Margin = new Thickness(5, 4, 5, 4);
+            CapsuleStatusBlock.Margin = new Thickness(1, 0, 0, 0);
+        }
+        UpdateCompactCapsuleContent();
+    }
+
+    private void UpdateWorkspaceLayout(bool vertical)
+    {
+        if (_workspaceIsVertical == vertical) return;
+        _workspaceIsVertical = vertical;
+        WorkspaceLayout.RowDefinitions.Clear();
+        WorkspaceLayout.ColumnDefinitions.Clear();
+
+        if (vertical)
+        {
+            WorkspaceLayout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            WorkspaceLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            WorkspaceLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetRow(WidgetNavigationHost, 0);
+            Grid.SetColumn(WidgetNavigationHost, 0);
+            Grid.SetColumnSpan(WidgetNavigationHost, 1);
+            Grid.SetRow(WidgetContentHost, 0);
+            Grid.SetColumn(WidgetContentHost, 1);
+            Grid.SetColumnSpan(WidgetContentHost, 1);
+            WidgetNavigationHost.Width = 148;
+            WidgetNavigationHost.Margin = new Thickness(0, 0, 10, 0);
+            WidgetNavigationList.ItemsPanel = (ItemsPanelTemplate)FindResource("VerticalWidgetNavigationPanel");
+            WidgetNavigationScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            WidgetNavigationScroller.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        }
+        else
+        {
+            WorkspaceLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            WorkspaceLayout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            WorkspaceLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetRow(WidgetNavigationHost, 0);
+            Grid.SetColumn(WidgetNavigationHost, 0);
+            Grid.SetColumnSpan(WidgetNavigationHost, 1);
+            Grid.SetRow(WidgetContentHost, 1);
+            Grid.SetColumn(WidgetContentHost, 0);
+            Grid.SetColumnSpan(WidgetContentHost, 1);
+            WidgetNavigationHost.Width = double.NaN;
+            WidgetNavigationHost.Margin = new Thickness(0, 0, 0, 10);
+            WidgetNavigationList.ItemsPanel = (ItemsPanelTemplate)FindResource("HorizontalWidgetNavigationPanel");
+            WidgetNavigationScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            WidgetNavigationScroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        }
+    }
+
+    private void WidgetNavigation_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button button)
+            AnimateNavigationButton(button, 110);
+    }
+
+    private void WidgetNavigation_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button button)
+            AnimateNavigationButton(button, button.DataContext is WidgetDefinition { IsSelected: true } ? 100 : 56);
+    }
+
+    private void AnimateNavigationButton(System.Windows.Controls.Button button, double targetWidth)
+    {
+        var fromWidth = button.ActualWidth > 0 ? button.ActualWidth : button.Width;
+        button.BeginAnimation(WidthProperty, null);
+        button.Width = fromWidth;
+        if (!_enableMotion || Math.Abs(fromWidth - targetWidth) < 0.5)
+        {
+            button.Width = targetWidth;
+            return;
+        }
+
+        var animation = new DoubleAnimation(fromWidth, targetWidth, TimeSpan.FromMilliseconds(140))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        animation.Completed += (_, _) =>
+        {
+            button.BeginAnimation(WidthProperty, null);
+            button.Width = targetWidth;
+        };
+        button.BeginAnimation(WidthProperty, animation);
+    }
+
+    private void DisplaySettingsChanged(object? sender, EventArgs e) =>
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(QueueDisplayRefresh));
+
+    private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message is 0x02E0 or 0x007E)
+            QueueDisplayRefresh();
+        return IntPtr.Zero;
+    }
+
+    private void QueueDisplayRefresh()
+    {
+        _displayRefreshTimer.Stop();
+        _displayRefreshTimer.Start();
+    }
+
+    private void RefreshDisplayLayout()
+    {
+        if (!_ready) return;
+        if (_dockEdge is not null || _state is PanelState.Compact or PanelState.Normal)
+            _screenDeviceName = ScreenAtWindow().DeviceName;
+        if ((_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null)
+            _workspaceScreenDeviceName = CurrentWorkspaceScreen().DeviceName;
+        UpdateAdaptiveLayout();
+        ApplyDimensions();
     }
 
     private void WorkspaceResizeGrip_DragDelta(object sender, DragDeltaEventArgs e)
     {
-        if (_state != PanelState.Expanded) return;
+        if (_state != PanelState.Expanded || _dockEdge is not null) return;
         var screen = CurrentWorkspaceScreen();
         var scale = GetScreenScale(screen);
         var work = screen.WorkingArea;
         var maxWidth = Math.Max(1, work.Width / scale.X - 24);
         var maxHeight = Math.Max(1, work.Height / scale.Y - 24);
-        var minWidth = Math.Min(820, maxWidth);
-        var minHeight = Math.Min(560, maxHeight);
+        var minWidth = Math.Min(900, maxWidth);
+        var minHeight = Math.Min(620, maxHeight);
         var newWidth = Math.Clamp(ActualWidth + e.HorizontalChange, minWidth, maxWidth);
         var newHeight = Math.Clamp(ActualHeight + e.VerticalChange, minHeight, maxHeight);
         Width = newWidth;
@@ -1085,7 +1336,7 @@ public partial class ShellWindow : Window
                 break;
             case nameof(HoverExpandCheckBox):
                 _hoverExpandEnabled = isChecked;
-                if (!_hoverExpandEnabled && _state == PanelState.Hover) SetState(PanelState.Compact);
+                if (!_hoverExpandEnabled && _state == PanelState.Normal) SetState(PanelState.Compact);
                 break;
             case nameof(TimerCompletionSoundCheckBox):
                 _timerCompletionSound = isChecked;
@@ -1182,6 +1433,11 @@ public partial class ShellWindow : Window
                 AudioReactiveIntensityValue.Text = $"{e.NewValue:0.0}×";
                 UpdateAudioReactiveUi();
                 break;
+            case nameof(WidgetIconSizeSlider):
+                _widgetIconSize = Math.Clamp(e.NewValue, 20, 50);
+                _widgetRegistry.SetIconSize(_widgetIconSize);
+                WidgetIconSizeValue.Text = $"{_widgetIconSize:0} DIP";
+                break;
             default:
                 return;
         }
@@ -1195,6 +1451,7 @@ public partial class ShellWindow : Window
         WeatherRefreshValue.Text = $"{_weatherRefreshTimer.Interval.TotalMinutes:0} мин";
         SystemRefreshValue.Text = $"{_systemStatsTimer.Interval.TotalSeconds:0} с";
         AudioReactiveIntensityValue.Text = $"{_audioReactiveIntensity:0.0}×";
+        WidgetIconSizeValue.Text = $"{_widgetIconSize:0} DIP";
     }
 
     private void DevicesList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) { }
@@ -1674,10 +1931,18 @@ public partial class ShellWindow : Window
     public async Task AllowCloseAsync()
     {
         _settingsSaveTimer.Stop();
+        _displayRefreshTimer.Stop();
         _deviceRefreshTimer.Stop();
         _obsRefreshTimer.Stop();
         StopIslandServices();
         _browserWindowAdapter.Dispose();
+        if (_displaySettingsSubscribed)
+        {
+            SystemEvents.DisplaySettingsChanged -= DisplaySettingsChanged;
+            _displaySettingsSubscribed = false;
+        }
+        _windowSource?.RemoveHook(WindowMessageHook);
+        _windowSource = null;
         await DisconnectObsAsync();
         SavePreferences();
         _allowClose = true;
@@ -1686,8 +1951,10 @@ public partial class ShellWindow : Window
     private void DragSurface_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState == MouseButtonState.Pressed && !IsInteractiveSource(e.OriginalSource as DependencyObject) &&
-            (_isGamingOverlay ? _overlayEditMode : _dockEdge is null && _state != PanelState.Fullscreen))
+            (_isGamingOverlay ? _overlayEditMode : _state != PanelState.Fullscreen))
         {
+            var startLeft = Left;
+            var startTop = Top;
             _isDragging = true;
             StartDragTrail();
             try { DragMove(); }
@@ -1706,18 +1973,60 @@ public partial class ShellWindow : Window
                 return;
             }
 
-            if (_state == PanelState.Expanded)
+            if (Math.Abs(Left - startLeft) < 2 && Math.Abs(Top - startTop) < 2)
+                return;
+
+            _dockEdge = null;
+            UpdateAdaptiveLayout();
+            UpdateDockUi();
+            WorkspaceResizeGrip.Visibility = _state == PanelState.Expanded ? Visibility.Visible : Visibility.Collapsed;
+            var screen = ScreenAtWindow();
+            _screenDeviceName = screen.DeviceName;
+            if (TryFindDockEdge(out var edge))
             {
-                _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+                DockTo(edge);
+                return;
+            }
+
+            if ((_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null)
+            {
+                _workspaceScreenDeviceName = screen.DeviceName;
                 _workspaceLeft = Left;
                 _workspaceTop = Top;
             }
             else
-            {
-                _screenDeviceName = ScreenAtWindow().DeviceName;
-            }
-            SavePreferences();
+                _preferences = _preferences with { Left = Left, Top = Top, ScreenDevice = _screenDeviceName };
+
+            UpdateAdaptiveLayout();
+            ApplyDimensions();
+            SchedulePreferenceSave();
         }
+    }
+
+    private bool TryFindDockEdge(out string edge)
+    {
+        edge = "";
+        var screen = ScreenAtWindow();
+        _screenDeviceName = screen.DeviceName;
+        var scale = GetScreenScale(screen);
+        var work = screen.WorkingArea;
+        var workLeft = work.Left / scale.X;
+        var workTop = work.Top / scale.Y;
+        var workRight = (work.Left + work.Width) / scale.X;
+        var workBottom = (work.Top + work.Height) / scale.Y;
+        var nearest = PanelDockGeometry.FindNearestEdge(
+            Left,
+            Top,
+            Width,
+            Height,
+            workLeft,
+            workTop,
+            workRight - workLeft,
+            workBottom - workTop);
+        if (nearest is null)
+            return false;
+        edge = nearest;
+        return true;
     }
 
     private void SizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1737,9 +2046,9 @@ public partial class ShellWindow : Window
             _browserWindowAdapter.ScheduleRefresh();
         }
         if (_isGamingOverlay) return;
-        if (!_isDimensionsAnimating && (_state is PanelState.Compact or PanelState.Hover) && _dockEdge is not null)
+        if (!_isDimensionsAnimating && _dockEdge is not null && _state != PanelState.Fullscreen)
             PositionAtEdge(_dockEdge);
-        if (_state == PanelState.Expanded && _ready && !_isDimensionsAnimating)
+        if (_state == PanelState.Expanded && _dockEdge is null && _ready && !_isDimensionsAnimating)
         {
             _workspaceWidth = Width;
             _workspaceHeight = Height;
@@ -1752,13 +2061,13 @@ public partial class ShellWindow : Window
         if (_isDimensionsAnimating) return;
         _browserWindowAdapter.ScheduleRefresh();
         if (!_ready || _isGamingOverlay || _state == PanelState.Fullscreen) return;
-        if (_state == PanelState.Expanded)
+        if ((_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null)
         {
             _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
             _workspaceLeft = Left;
             _workspaceTop = Top;
         }
-        else
+        else if (_state == PanelState.Compact)
         {
             _screenDeviceName = ScreenAtWindow().DeviceName;
             _preferences = _preferences with { Left = Left, Top = Top, ScreenDevice = _screenDeviceName };
@@ -1772,8 +2081,11 @@ public partial class ShellWindow : Window
     {
         _dockEdge = edge;
         _screenDeviceName = ScreenAtWindow().DeviceName;
-        PositionAtEdge(edge);
+        _workspaceScreenDeviceName = _screenDeviceName;
+        UpdateAdaptiveLayout();
         UpdateDockUi();
+        WorkspaceResizeGrip.Visibility = Visibility.Collapsed;
+        ApplyDimensions();
         SavePreferences();
     }
 
@@ -1785,24 +2097,47 @@ public partial class ShellWindow : Window
             return;
         }
 
+        if (_state is PanelState.Normal or PanelState.Expanded)
+        {
+            _workspaceLeft = Left;
+            _workspaceTop = Top;
+            _workspaceScreenDeviceName = ScreenAtWindow().DeviceName;
+        }
+        else
+            _preferences = _preferences with { Left = Left, Top = Top, ScreenDevice = ScreenAtWindow().DeviceName };
         _dockEdge = null;
         _screenDeviceName = ScreenAtWindow().DeviceName;
+        UpdateAdaptiveLayout();
         UpdateDockUi();
+        WorkspaceResizeGrip.Visibility = _state == PanelState.Expanded ? Visibility.Visible : Visibility.Collapsed;
+        ApplyDimensions();
         SavePreferences();
     }
 
     private void UpdateDockUi()
     {
-        DockToggleButton.Content = _dockEdge is null ? "Прикрепить сверху" : "Открепить";
+        DockToggleButton.Content = _dockEdge is null ? "⌖" : "↗";
+        DockToggleButton.ToolTip = _dockEdge is null
+            ? "Прикрепить к верхнему краю"
+            : $"Открепить от края «{DescribeDockEdge(_dockEdge)}»";
         DockStatusText.Text = _dockEdge switch
         {
-            "top" => "Закреплена по центру верхнего края.",
-            "bottom" => "Закреплена снизу.",
-            "left" => "Закреплена слева.",
-            "right" => "Закреплена справа.",
-            _ => "Откреплена. Перетащите капсулу или закрепите сверху."
+            "top" => "Прикреплена сверху · горизонтальная компоновка.",
+            "bottom" => "Прикреплена снизу · горизонтальная компоновка.",
+            "left" => "Прикреплена слева · вертикальная компоновка.",
+            "right" => "Прикреплена справа · вертикальная компоновка.",
+            _ => "Откреплена. Перетащите панель к краю экрана, чтобы прикрепить."
         };
     }
+
+    private static string DescribeDockEdge(string edge) => edge switch
+    {
+        "top" => "верх",
+        "bottom" => "низ",
+        "left" => "левый",
+        "right" => "правый",
+        _ => edge
+    };
 
     private void StartDragTrail()
     {
@@ -1832,12 +2167,13 @@ public partial class ShellWindow : Window
         _preferences = _preferences with
         {
             DockEdge = _isGamingOverlay || _state == PanelState.Fullscreen ? _preferences.DockEdge : _dockEdge,
-            Left = _isGamingOverlay || (_state is PanelState.Expanded or PanelState.Fullscreen) ? _preferences.Left : Left,
-            Top = _isGamingOverlay || (_state is PanelState.Expanded or PanelState.Fullscreen) ? _preferences.Top : Top,
+            Left = _isGamingOverlay || (_state is PanelState.Normal or PanelState.Expanded or PanelState.Fullscreen) ? _preferences.Left : Left,
+            Top = _isGamingOverlay || (_state is PanelState.Normal or PanelState.Expanded or PanelState.Fullscreen) ? _preferences.Top : Top,
             SizeScale = _sizeScale,
             Opacity = 1,
             City = CityBox.Text.Trim(),
-            ScreenDevice = _isGamingOverlay || (_state is PanelState.Expanded or PanelState.Fullscreen)
+            ScreenDevice = _isGamingOverlay ||
+                ((_state is PanelState.Normal or PanelState.Expanded or PanelState.Fullscreen) && _dockEdge is null)
                 ? _preferences.ScreenDevice
                 : _screenDeviceName,
             WeatherLocation = _selectedWeatherLocation,
@@ -1868,12 +2204,13 @@ public partial class ShellWindow : Window
             EnableMotion = _enableMotion,
             EnableAudioReactive = _enableAudioReactive,
             AudioReactiveIntensity = _audioReactiveIntensity,
+            WidgetIconSize = _widgetIconSize,
             SelectedWidget = _widgetHost.SelectedWidget?.Id ?? _preferences.SelectedWidget,
-            WorkspaceLeft = _state == PanelState.Expanded ? Left : _workspaceLeft ?? _preferences.WorkspaceLeft,
-            WorkspaceTop = _state == PanelState.Expanded ? Top : _workspaceTop ?? _preferences.WorkspaceTop,
-            WorkspaceWidth = _state == PanelState.Expanded ? Width : _workspaceWidth,
-            WorkspaceHeight = _state == PanelState.Expanded ? Height : _workspaceHeight,
-            WorkspaceScreenDevice = _state == PanelState.Expanded
+            WorkspaceLeft = (_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null ? Left : _workspaceLeft ?? _preferences.WorkspaceLeft,
+            WorkspaceTop = (_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null ? Top : _workspaceTop ?? _preferences.WorkspaceTop,
+            WorkspaceWidth = _state == PanelState.Expanded && _dockEdge is null ? Width : _workspaceWidth,
+            WorkspaceHeight = _state == PanelState.Expanded && _dockEdge is null ? Height : _workspaceHeight,
+            WorkspaceScreenDevice = (_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null
                 ? ScreenAtWindow().DeviceName
                 : _workspaceScreenDeviceName ?? _preferences.WorkspaceScreenDevice,
             BrowserAdaptationEnabled = _browserAdaptationEnabled

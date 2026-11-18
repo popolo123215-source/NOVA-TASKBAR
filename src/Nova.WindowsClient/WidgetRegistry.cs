@@ -16,6 +16,7 @@ internal sealed class WidgetDefinition(
     Action? onDeactivated = null) : INotifyPropertyChanged
 {
     private bool _isSelected;
+    private double _iconSize = 24;
 
     public string Id { get; } = id;
     public string Title { get; } = title;
@@ -24,6 +25,8 @@ internal sealed class WidgetDefinition(
     public FrameworkElement View { get; } = view;
     public Action? OnActivated { get; } = onActivated;
     public Action? OnDeactivated { get; } = onDeactivated;
+    public double IconSize => _iconSize;
+    public double NavigationButtonHeight => Math.Max(48, _iconSize + 16);
     public bool IsSelected
     {
         get => _isSelected;
@@ -36,6 +39,15 @@ internal sealed class WidgetDefinition(
     }
 
     internal void SetSelected(bool selected) => IsSelected = selected;
+
+    internal void SetIconSize(double size)
+    {
+        size = Math.Clamp(size, 20, 50);
+        if (Math.Abs(_iconSize - size) < 0.01) return;
+        _iconSize = size;
+        OnPropertyChanged(nameof(IconSize));
+        OnPropertyChanged(nameof(NavigationButtonHeight));
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -60,6 +72,13 @@ internal sealed class WidgetRegistry
 
         _byId.Add(widget.Id, widget);
         Widgets.Add(widget);
+    }
+
+    public void SetIconSize(double size)
+    {
+        size = Math.Clamp(size, 20, 50);
+        foreach (var widget in Widgets)
+            widget.SetIconSize(size);
     }
 
     public WidgetDefinition Select(string id)

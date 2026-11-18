@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><RootNamespace>Nova.WindowsClient</RootNamespace>
     <AssemblyName>Nova.TaskBar</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>6.0.4</Version>
+    <Version>6.0.5</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />

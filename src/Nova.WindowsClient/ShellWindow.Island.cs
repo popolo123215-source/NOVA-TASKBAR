@@ -111,7 +111,7 @@ public partial class ShellWindow
         _hoverCollapseTimer.Tick += (_, _) =>
         {
             _hoverCollapseTimer.Stop();
-            if (_hoverExpandEnabled && !_isDragging && !IsMouseOver && _state == PanelState.Hover)
+            if (_hoverExpandEnabled && !_isDragging && !IsMouseOver && _state == PanelState.Normal)
                 SetState(PanelState.Compact);
         };
         _mediaService.Changed += (_, _) => Dispatcher.BeginInvoke(new Action(UpdateMediaUi));
@@ -499,7 +499,7 @@ public partial class ShellWindow
     {
         if (_islandDisposed) return;
         var captureEnabled = _enableAudioReactive && _enableMotion && IsVisible && !_isGamingOverlay &&
-            (_state is PanelState.Compact or PanelState.Hover);
+            _state == PanelState.Compact;
         if (captureEnabled)
         {
             if (!_audioReactiveTimer.IsEnabled)
@@ -532,7 +532,7 @@ public partial class ShellWindow
                         ? "Аудиоанимация выключена в настройках."
                         : _isGamingOverlay
                             ? "Аудиореактивность приостановлена в игровом оверлее."
-                            : (!IsVisible || _state is PanelState.Expanded or PanelState.Fullscreen)
+                            : (!IsVisible || _state is PanelState.Normal or PanelState.Expanded or PanelState.Fullscreen)
                                 ? "Аудиореактивность капсулы приостановлена в рабочем пространстве."
                                 : "Аудиореактивность приостановлена.");
         }
@@ -590,7 +590,7 @@ public partial class ShellWindow
             return;
 
         var reactiveScale = _enableAudioReactive && _enableMotion && !_isGamingOverlay &&
-            (_state is PanelState.Compact or PanelState.Hover)
+            _state == PanelState.Compact
                 ? _audioReactiveIntensity
                 : 0;
         var hasReactiveInput = reactiveScale > 0 &&
@@ -606,7 +606,6 @@ public partial class ShellWindow
         var radius = Math.Min(_state switch
         {
             PanelState.Compact => 40,
-            PanelState.Hover => 34,
             _ => 24
         }, Math.Min(width, height) / 2 - inset);
         var left = inset + radius;
@@ -793,13 +792,26 @@ public partial class ShellWindow
             [CapsuleStatusBlock] = 1.75 + (_showCapsuleNetwork ? 0.3 : 0) + (_showCapsuleVpn ? 0.3 : 0)
         };
 
+        var vertical = _compactIsVertical == true;
         for (var index = 0; index < order.Length; index++)
         {
             var element = order[index];
-            Grid.SetColumn(element, index);
-            CapsuleContentGrid.ColumnDefinitions[index].Width = element.Visibility == Visibility.Visible
-                ? new GridLength(weights[element], GridUnitType.Star)
-                : new GridLength(0, GridUnitType.Pixel);
+            if (vertical)
+            {
+                Grid.SetRow(element, index);
+                Grid.SetColumn(element, 0);
+                CapsuleContentGrid.RowDefinitions[index].Height = element.Visibility == Visibility.Visible
+                    ? GridLength.Auto
+                    : new GridLength(0, GridUnitType.Pixel);
+            }
+            else
+            {
+                Grid.SetRow(element, 0);
+                Grid.SetColumn(element, index);
+                CapsuleContentGrid.ColumnDefinitions[index].Width = element.Visibility == Visibility.Visible
+                    ? new GridLength(weights[element], GridUnitType.Star)
+                    : new GridLength(0, GridUnitType.Pixel);
+            }
         }
     }
 
@@ -1257,7 +1269,6 @@ public partial class ShellWindow
         UpdateSettingsOptionUi();
         _overlayEditMode = false;
         CompactView.Visibility = Visibility.Collapsed;
-        MainView.Visibility = Visibility.Collapsed;
         ExpandedView.Visibility = Visibility.Collapsed;
         GamingOverlayView.Visibility = Visibility.Visible;
         CapsuleSurfacePath.Visibility = Visibility.Collapsed;
@@ -1393,13 +1404,13 @@ public partial class ShellWindow
         if (_isGamingOverlay || !_hoverExpandEnabled) return;
         _hoverCollapseTimer.Stop();
         if (_state == PanelState.Compact)
-            SetState(PanelState.Hover);
+            SetState(PanelState.Normal);
     }
 
     private void Island_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (_isGamingOverlay || !_hoverExpandEnabled) return;
-        if (_state == PanelState.Hover && !_isDragging)
+        if (_state == PanelState.Normal && !_isDragging)
         {
             _hoverCollapseTimer.Stop();
             _hoverCollapseTimer.Start();
@@ -1487,29 +1498,13 @@ public partial class ShellWindow
     {
         var screen = CurrentScreen();
         var scale = GetScreenScale(screen);
-        var bounds = screen.Bounds;
         var work = screen.WorkingArea;
-        var left = bounds.Left / scale.X;
-        var top = bounds.Top / scale.Y;
-        var width = bounds.Width / scale.X;
-        var height = bounds.Height / scale.Y;
         var workLeft = work.Left / scale.X;
         var workTop = work.Top / scale.Y;
         var workWidth = work.Width / scale.X;
         var workHeight = work.Height / scale.Y;
-        var targetLeft = edge switch
-        {
-            "left" => workLeft + 10,
-            "right" => workLeft + workWidth - actualWidth - 10,
-            _ => left + (width - actualWidth) / 2
-        };
-        var targetTop = edge switch
-        {
-            "bottom" => workTop + workHeight - actualHeight - 10,
-            "left" or "right" => top + (height - actualHeight) / 2,
-            _ => top + 8
-        };
-        return (targetLeft, targetTop);
+        return PanelDockGeometry.GetPositionAtEdge(
+            edge, workLeft, workTop, workWidth, workHeight, actualWidth, actualHeight);
     }
 
     private void RestoreFreePosition(double? targetWidth = null, double? targetHeight = null)

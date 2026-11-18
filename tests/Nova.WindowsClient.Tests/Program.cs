@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using CommunityToolkit.WinUI.Notifications;
+using Nova.WindowsClient;
 using Nova.WindowsClient.Services;
 
 if (args.Contains("--windows-toast-smoke", StringComparer.Ordinal))
@@ -68,6 +69,8 @@ Run("OBS WebSocket authentication vector is stable", TestObsAuthentication);
 Run("OBS installation discovery never launches the program", TestObsInstallationDiscovery);
 await RunAsync("OBS WebSocket reads state/scenes and sends recording/scene commands", TestObsWebSocketProtocol);
 Run("browser adaptation finds a non-overlapping window position", TestBrowserWindowGeometry);
+Run("dock geometry respects edge orientation and snap threshold", TestPanelDockGeometry);
+Run("widget icon size stays within its DIP range and resizes navigation buttons", TestWidgetIconSize);
 Run("screen text cleanup preserves paragraphs and merges wrapped lines", TestScreenTextCleanup);
 await RunAsync("screen translation rejects empty and oversized input before sending it", TestTranslationLimits);
 Run("default Windows output volume is readable", TestSystemMasterVolume);
@@ -825,6 +828,79 @@ void TestBrowserWindowGeometry()
     var noOverlap = BrowserWindowGeometry.FindNonOverlappingBounds(
         new System.Drawing.Rectangle(0, 100, 640, 480), capsule, workArea);
     Require(noOverlap is null, "window geometry was changed even though it did not cover the capsule");
+}
+
+void TestPanelDockGeometry()
+{
+    const double workLeft = 100;
+    const double workTop = 50;
+    const double workWidth = 1000;
+    const double workHeight = 700;
+    const double panelWidth = 300;
+    const double panelHeight = 200;
+
+    Require(!PanelDockGeometry.IsVertical("top") && !PanelDockGeometry.IsVertical("bottom") &&
+        PanelDockGeometry.IsVertical("left") && PanelDockGeometry.IsVertical("right"),
+        "dock edges did not map to the required panel orientations");
+
+    var left = PanelDockGeometry.GetPositionAtEdge(
+        "left", workLeft, workTop, workWidth, workHeight, panelWidth, panelHeight);
+    var right = PanelDockGeometry.GetPositionAtEdge(
+        "right", workLeft, workTop, workWidth, workHeight, panelWidth, panelHeight);
+    var top = PanelDockGeometry.GetPositionAtEdge(
+        "top", workLeft, workTop, workWidth, workHeight, panelWidth, panelHeight);
+    var bottom = PanelDockGeometry.GetPositionAtEdge(
+        "bottom", workLeft, workTop, workWidth, workHeight, panelWidth, panelHeight);
+    Require(left.Left == 110 && left.Top == 300 &&
+        right.Left == 790 && right.Top == 300 &&
+        top.Left == 450 && top.Top == 58 &&
+        bottom.Left == 450 && bottom.Top == 540,
+        "docked positions did not align to edges and center along the working area");
+
+    Require(PanelDockGeometry.FindNearestEdge(
+            120, 250, panelWidth, panelHeight, workLeft, workTop, workWidth, workHeight) == "left" &&
+        PanelDockGeometry.FindNearestEdge(
+            132, 250, panelWidth, panelHeight, workLeft, workTop, workWidth, workHeight) == "left" &&
+        PanelDockGeometry.FindNearestEdge(
+            133, 250, panelWidth, panelHeight, workLeft, workTop, workWidth, workHeight) is null,
+        "the docking threshold was inconsistent or caused distant edges to snap");
+}
+
+void TestWidgetIconSize()
+{
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            var widget = new WidgetDefinition(
+                "icon-size-test",
+                "Icon size test",
+                "Test widget",
+                "N",
+                new System.Windows.Controls.Border());
+            var registry = new WidgetRegistry();
+            registry.Register(widget);
+
+            registry.SetIconSize(19);
+            Require(widget.IconSize == 20 && widget.NavigationButtonHeight == 48,
+                "minimum icon size did not preserve the minimum navigation button height");
+            registry.SetIconSize(50);
+            Require(widget.IconSize == 50 && widget.NavigationButtonHeight == 66,
+                "maximum icon size did not grow the navigation button");
+            registry.SetIconSize(51);
+            Require(widget.IconSize == 50, "icon size was not clamped to the supported DIP range");
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure is not null)
+        throw new InvalidOperationException("Widget icon size test failed.", failure);
 }
 
 void TestScreenTextCleanup()
