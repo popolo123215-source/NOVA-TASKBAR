@@ -689,4 +689,19 @@ Research references:
 - **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` points to the v15 publish EXE, working directory, and icon.
 - **RUNTIME / GUI: NOT VERIFIED.** The already-running single-instance v14 process was left untouched; its mutex prevents an interactive launch of v15 without interrupting the existing session.
 - **FPS / frame-time / CPU profile: NOT VERIFIED.** No reliable frame-time capture was available, so stable 60 FPS is not claimed. Rapid UI transitions, repeated opens, long-session GUI behavior, and mixed-DPI/multi-monitor behavior remain unverified in v15.
-- The v15 binary publish remains local and was not uploaded as a GitHub release asset. The source changes were pushed to `main` in commit `3c0f2e3`; the existing v6.0.3 tag and release asset were not changed.
+- At the time of this v15 publish, the binary was local and only the source changes had been pushed. It was superseded by the v6.0.4 release below.
+
+## v6.0.4 Windows x64 release (2026-11-18)
+
+- Set the Windows client product version to `6.0.4` and updated the README download instructions.
+- Published a self-contained `win-x64` package as GitHub Release [v6.0.4](https://github.com/popolo123215-source/NOVA-TASKBAR/releases/tag/v6.0.4). The tag points to source commit `80102fa`.
+- The release archive `NOVA-Taskbar-v6.0.4-win-x64.zip` contains 492 files, including `Nova.TaskBar.exe`, the .NET runtime, `nova_webrtc.dll`, and the bundled local train schedule. Users must extract the complete ZIP and run `Nova.TaskBar.exe` from that folder; the EXE is not a standalone file.
+- Archive SHA-256: `757a27b1c07e0c1361e7a8e17d08097da2b76a63db97cc3123dd9ba2a20d00ef`. A `.sha256` asset is also attached to the release.
+
+### Verification
+
+- **BUILD VERIFIED:** Windows-client Release build completed with 0 warnings and 0 errors.
+- **FUNCTIONAL VERIFIED:** `Nova.WindowsClient.Tests` passed **29/29**.
+- **PUBLISH VERIFIED:** GitHub release API reports both assets as uploaded. The archive was downloaded back from GitHub; its size and SHA-256 matched the local ZIP, and extraction produced all 492 files with version metadata `6.0.4`.
+- **SHORTCUT VERIFIED:** `C:\Users\NIIOIY\Desktop\NOVA Taskbar.lnk` points to the v6.0.4 publish EXE, working directory, and icon.
+- **RUNTIME / GUI: NOT VERIFIED.** The already-running single-instance v14 app was left untouched, so the v6.0.4 EXE was not launched interactively. Stable 60 FPS and long-session UI behavior are not claimed.
