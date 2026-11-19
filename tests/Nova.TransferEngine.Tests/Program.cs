@@ -18,7 +18,10 @@ await Run("framed protocol round trip with partial reads", TestFramedJsonAsync);
 RunSync("oversized protocol frame is rejected", TestOversizedFrame);
 RunSync("path traversal and rooted paths are rejected", TestPathSafety);
 RunSync("discovery payload is validated", TestDiscoveryPayload);
+await Run("LAN discovery can refresh without restarting the transfer listener", TestDiscoveryRefreshAsync);
 RunSync("one Device ID cannot be trusted with two certificate identities", TestDuplicateDeviceIdentityTrust);
+RunSync("explicit device identity replacement persists the new fingerprint", TestReplaceTrustedDeviceIdentity);
+RunSync("removing a trusted device persists the unpairing", TestRemoveTrustedDevice);
 RunSync("transfer route preference persists across settings reload", TestTransferRoutePreferencePersistence);
 await Run("authenticated streaming transfer, consent and persisted history", TestEndToEndAsync);
 await Run("Direct VPN loopback TCP/TLS transfer verifies SHA-256", TestDirectVpnAsync);
@@ -716,8 +719,33 @@ static void TestDiscoveryPayload()
         SentAt = DateTimeOffset.UtcNow
     }));
     Assert(LanDiscoveryService.TryParseAnnouncement(valid, IPAddress.Loopback, out var found) && found?.Port == 44000, "Корректное объявление отклонено.");
+    Assert(IPAddress.Parse("192.168.10.255").Equals(
+        LanDiscoveryService.GetDirectedBroadcastAddress(IPAddress.Parse("192.168.10.23"), IPAddress.Parse("255.255.255.0"))),
+        "IPv4 directed broadcast address was calculated incorrectly.");
+    Assert(LanDiscoveryService.GetDirectedBroadcastAddress(IPAddress.Parse("192.168.10.23"), IPAddress.Parse("255.0.255.0")) is null,
+        "A non-contiguous IPv4 subnet mask was accepted.");
     var bad = System.Text.Encoding.UTF8.GetBytes("{\"Version\":1,\"Port\":70000}");
     Assert(!LanDiscoveryService.TryParseAnnouncement(bad, IPAddress.Loopback, out _), "Некорректное объявление принято.");
+}
+
+static async Task TestDiscoveryRefreshAsync()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-discovery-refresh-" + Guid.NewGuid().ToString("N"));
+    using var identity = DeviceIdentity.CreateEphemeral("Discovery refresh test");
+    var service = new LocalTransferService(root, identity: identity);
+    try
+    {
+        service.Start();
+        var tcpPort = service.TcpPort;
+        await service.RefreshDiscoveryAsync();
+        Assert(service.IsStarted && service.TcpPort == tcpPort,
+            "Refreshing LAN discovery restarted or stopped the transfer listener.");
+    }
+    finally
+    {
+        await service.DisposeAsync();
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
 }
 
 static void TestDuplicateDeviceIdentityTrust()
@@ -733,6 +761,53 @@ static void TestDuplicateDeviceIdentityTrust()
     Assert(store.Find(first.Fingerprint)?.Device.DeviceId == first.Device.DeviceId && !store.IsTrusted(second.Fingerprint),
         "The trust store replaced the certificate associated with an existing device ID.");
     Directory.Delete(root, recursive: true);
+}
+
+static void TestReplaceTrustedDeviceIdentity()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-trust-replacement-" + Guid.NewGuid().ToString("N"));
+    var deviceId = Guid.NewGuid().ToString("N");
+    using var oldIdentity = DeviceIdentity.CreateEphemeral("Previous Android identity");
+    using var newIdentity = DeviceIdentity.CreateEphemeral("Updated Android identity");
+    try
+    {
+        var store = new PeerTrustStore(root);
+        var previous = new DiscoveredDevice(deviceId, "Android device", IPAddress.None, 0,
+            oldIdentity.Fingerprint, DateTimeOffset.UtcNow, false);
+        var updated = new DiscoveredDevice(deviceId, "Android device", IPAddress.None, 0,
+            newIdentity.Fingerprint, DateTimeOffset.UtcNow, false);
+        store.Trust(previous);
+
+        store.ReplaceIdentity(updated, previous.Fingerprint);
+
+        Assert(!store.IsTrusted(previous.Fingerprint), "The old certificate remained trusted after replacement.");
+        Assert(store.Find(updated.Fingerprint)?.Device.DeviceId == deviceId,
+            "The new certificate was not associated with the existing device ID.");
+        var reloaded = new PeerTrustStore(root);
+        Assert(!reloaded.IsTrusted(previous.Fingerprint) && reloaded.IsTrusted(updated.Fingerprint),
+            "The identity replacement did not persist after reload.");
+        Expect<InvalidOperationException>(() => store.ReplaceIdentity(updated, previous.Fingerprint));
+        Assert(store.IsTrusted(updated.Fingerprint), "A stale replacement request changed the current trust.");
+    }
+    finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+}
+
+static void TestRemoveTrustedDevice()
+{
+    var root = Path.Combine(Path.GetTempPath(), "nova-trust-removal-" + Guid.NewGuid().ToString("N"));
+    using var identity = DeviceIdentity.CreateEphemeral("Removable trusted device");
+    try
+    {
+        var store = new PeerTrustStore(root);
+        var peer = new DiscoveredDevice(identity.Device.DeviceId, identity.Device.DisplayName, IPAddress.Loopback, 44000,
+            identity.Fingerprint, DateTimeOffset.UtcNow, false);
+        store.Trust(peer);
+        Assert(store.IsTrusted(identity.Fingerprint), "The device was not trusted before removal.");
+        Assert(store.Remove(identity.Fingerprint), "The trusted device was not removed.");
+        Assert(!store.Remove(identity.Fingerprint), "Removing an absent trust entry should report no change.");
+        Assert(!new PeerTrustStore(root).IsTrusted(identity.Fingerprint), "The removed trust entry returned after reload.");
+    }
+    finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
 }
 
 static async Task TestEndToEndAsync()

@@ -18,6 +18,7 @@ public sealed class LocalTransferService : IAsyncDisposable
     private static readonly TimeSpan DirectVpnNetworkIdleTimeout = TimeSpan.FromMinutes(2);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connectionLimit = new(4, 4);
+    private readonly SemaphoreSlim _discoveryLifecycleGate = new(1, 1);
     private readonly List<Task> _handlers = [];
     private readonly object _handlerGate = new();
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _directVpnTransfers = new(StringComparer.Ordinal);
@@ -162,7 +163,8 @@ public sealed class LocalTransferService : IAsyncDisposable
                 continue;
             }
             byId[remote.DeviceId] = new DiscoveredDevice(remote.DeviceId, remote.DisplayName, IPAddress.None, 0,
-                remote.Fingerprint, DateTimeOffset.UtcNow, true, DeviceDiscoverySource.Internet, remote.Online, remote.Online);
+                remote.Fingerprint, DateTimeOffset.UtcNow, TrustedPeers.IsTrusted(remote.Fingerprint),
+                DeviceDiscoverySource.Internet, remote.Online, remote.Online);
         }
         foreach (var trusted in TrustedPeers.GetAll())
         {
@@ -173,7 +175,40 @@ public sealed class LocalTransferService : IAsyncDisposable
         return byId.Values.OrderBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
 
+    public async Task RefreshDiscoveryAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_started) throw new InvalidOperationException("The local transfer listener has not started.");
+        await _discoveryLifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_started) throw new InvalidOperationException("The local transfer listener has stopped.");
+            if (_discovery is null)
+            {
+                var discovery = new LanDiscoveryService(Identity, TcpPort, TrustedPeers.IsTrusted);
+                try
+                {
+                    discovery.Start();
+                    _discovery = discovery;
+                }
+                catch
+                {
+                    await discovery.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+            else
+            {
+                await _discovery.RefreshAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally { _discoveryLifecycleGate.Release(); }
+    }
+
     public void TrustDevice(DiscoveredDevice device) => TrustedPeers.Trust(device);
+    public void ReplaceTrustedDeviceIdentity(DiscoveredDevice device, string previousFingerprint) =>
+        TrustedPeers.ReplaceIdentity(device, previousFingerprint);
     public bool RemoveTrustedDevice(string fingerprint) => TrustedPeers.Remove(fingerprint);
 
     public void SetDestinationDirectory(string path) => Settings.SetDestinationDirectory(path);
@@ -606,7 +641,13 @@ public sealed class LocalTransferService : IAsyncDisposable
         await _internet.DisposeAsync();
         _webRtcSignaling.Dispose();
         try { _listener.Stop(); } catch (SocketException) { }
-        if (_discovery is not null) await _discovery.DisposeAsync();
+        await _discoveryLifecycleGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_discovery is not null) await _discovery.DisposeAsync();
+            _discovery = null;
+        }
+        finally { _discoveryLifecycleGate.Release(); }
         if (_acceptLoop is not null)
         {
             try { await _acceptLoop.WaitAsync(TimeSpan.FromSeconds(3)); }

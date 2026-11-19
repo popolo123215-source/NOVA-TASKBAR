@@ -60,6 +60,35 @@ public sealed class PeerTrustStore
         }
     }
 
+    public void ReplaceIdentity(DiscoveredDevice device, string previousFingerprint)
+    {
+        if (!IsValidFingerprint(device.Fingerprint)) throw new ArgumentException("Отпечаток сертификата некорректен.", nameof(device));
+        if (!IsValidFingerprint(previousFingerprint)) throw new ArgumentException("Прежний отпечаток сертификата некорректен.", nameof(previousFingerprint));
+        lock (_gate)
+        {
+            var oldFingerprint = Normalize(previousFingerprint);
+            var fingerprint = Normalize(device.Fingerprint);
+            if (!_devices.TryGetValue(oldFingerprint, out var previous) || previous.Device.DeviceId != device.DeviceId)
+                throw new InvalidOperationException("The previous trusted identity changed. Refresh the device list and try again.");
+            if (_devices.TryGetValue(fingerprint, out var current) && current.Device.DeviceId != device.DeviceId)
+                throw new InvalidOperationException("This certificate is already associated with another device ID.");
+            if (_devices.Values.Any(existing =>
+                    existing.Device.DeviceId == device.DeviceId &&
+                    existing.Fingerprint != oldFingerprint &&
+                    existing.Fingerprint != fingerprint))
+                throw new InvalidOperationException("Multiple previous identities exist for this device. Remove the old trust entries before replacing it.");
+
+            var updated = new Dictionary<string, TrustedDevice>(_devices, StringComparer.OrdinalIgnoreCase);
+            updated.Remove(oldFingerprint);
+            updated[fingerprint] = new TrustedDevice(
+                new DeviceRef(device.DeviceId, device.DisplayName, "windows"),
+                fingerprint,
+                DateTimeOffset.UtcNow);
+            Save(updated);
+            _devices = updated;
+        }
+    }
+
     public bool Remove(string fingerprint)
     {
         lock (_gate)
@@ -74,9 +103,12 @@ public sealed class PeerTrustStore
     private static string Normalize(string value) => value.Replace(":", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal).ToUpperInvariant();
 
     private void Save()
+        => Save(_devices);
+
+    private void Save(Dictionary<string, TrustedDevice> devices)
     {
         var temporary = _path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(_devices, JsonOptions));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(devices, JsonOptions));
         File.Move(temporary, _path, true);
     }
 }

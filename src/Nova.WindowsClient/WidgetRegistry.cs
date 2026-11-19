@@ -17,6 +17,7 @@ internal sealed class WidgetDefinition(
 {
     private bool _isSelected;
     private double _iconSize = 24;
+    private bool _isVisible = true;
 
     public string Id { get; } = id;
     public string Title { get; } = title;
@@ -37,6 +38,16 @@ internal sealed class WidgetDefinition(
             OnPropertyChanged();
         }
     }
+    public bool IsVisible
+    {
+        get => _isVisible;
+        private set
+        {
+            if (_isVisible == value) return;
+            _isVisible = value;
+            OnPropertyChanged();
+        }
+    }
 
     internal void SetSelected(bool selected) => IsSelected = selected;
 
@@ -48,6 +59,8 @@ internal sealed class WidgetDefinition(
         OnPropertyChanged(nameof(IconSize));
         OnPropertyChanged(nameof(NavigationButtonHeight));
     }
+
+    internal void SetVisible(bool visible) => IsVisible = visible;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -79,6 +92,12 @@ internal sealed class WidgetRegistry
         size = Math.Clamp(size, 20, 50);
         foreach (var widget in Widgets)
             widget.SetIconSize(size);
+    }
+
+    public void SetVisibleWidgets(IReadOnlyCollection<string>? ids)
+    {
+        foreach (var widget in Widgets)
+            widget.SetVisible(ids is null || ids.Contains(widget.Id, StringComparer.OrdinalIgnoreCase));
     }
 
     public WidgetDefinition Select(string id)

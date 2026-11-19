@@ -65,16 +65,48 @@ internal sealed class ScreenOcrService
             BitmapPixelFormat.Bgra8,
             BitmapAlphaMode.Premultiplied);
         var result = await engine.RecognizeAsync(softwareBitmap);
-        return result.Text;
+        return NormalizeOcrText(result.Text);
     }
 
     private static byte[] CapturePng(Rectangle screenRegion)
     {
         using var bitmap = new Bitmap(screenRegion.Width, screenRegion.Height, PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
+        {
             graphics.CopyFromScreen(screenRegion.Location, Point.Empty, screenRegion.Size, CopyPixelOperation.SourceCopy);
+            graphics.Flush();
+        }
+
+        var scale = screenRegion.Width < 1200 || screenRegion.Height < 800 ? 2 : 1;
+        using var prepared = scale == 1
+            ? (Bitmap)new Bitmap(bitmap)
+            : new Bitmap(bitmap.Width * scale, bitmap.Height * scale, PixelFormat.Format32bppArgb);
+        if (scale > 1)
+        {
+            using var graphics = Graphics.FromImage(prepared);
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            graphics.DrawImage(bitmap, new Rectangle(0, 0, prepared.Width, prepared.Height));
+        }
+
         using var imageStream = new MemoryStream();
-        bitmap.Save(imageStream, ImageFormat.Png);
+        prepared.Save(imageStream, ImageFormat.Png);
         return imageStream.ToArray();
+    }
+
+    private static string NormalizeOcrText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+        return string.Concat(text
+            .Replace('\0', ' ')
+            .Replace('\uFFFD', ' ')
+            .Select(character => char.IsControl(character) &&
+                character is not '\r' and not '\n' and not '\t'
+                ? ' '
+                : character))
+            .Replace("  ", " ")
+            .Trim();
     }
 }

@@ -847,3 +847,208 @@ Research references:
 - Repeated-launch IPC was verified with a real running process: the first v6.1.2 process remained alive (`PID 11172`); a second launch (`PID 34292`) exited within the activation check and did not create a second NOVA process. The existing instance remained the only running process.
 - Updated the desktop and Start Menu shortcuts to v6.1.2. Direct GUI startup remained responsive for more than four seconds and did not produce another taskbar/process flash after the old process was replaced.
 - Release EXE version: `6.1.2.0`. Archive: `build/NOVA-Taskbar-v6.1.2-startup-fix-win-x64.zip`. ZIP SHA-256: `c2f7b35c65ad3784ef9434b6eec8dc04e9451af7d6d90f05bd9faade615977cb`.
+
+## Defect recovery — local v6.1.3 build (2026-11-18)
+
+### Scope and implementation
+
+- **UI-1 / shutter motion:** `ApplyDimensions` no longer assigns final `Width`, `Height`, `Left`, and `Top` before the transition. Geometry transitions now animate from current values to synchronized targets, reverse/interrupt cleanly, and set final base values only at completion or in the no-motion path. Min constraints are reset per state to avoid compact/normal/fullscreen conflicts. Size and location handlers update the capsule geometry during dimension changes; `UpdateCapsuleGeometry` no longer suppresses the active transition.
+- **UI-2 / adaptive shell:** docking, adaptive layout, and capsule geometry continue to use the same state and target geometry. `UpdateCapsuleGeometry` is called through window size/location changes so the contour follows the moving/sizing window rather than lagging behind.
+- **UI-3 / navigation hover:** the adaptive navigation style no longer owns a competing `Width`/selected-width trigger. Runtime code is the single sizing source; selected and hover widths are separated (56/100/110 DIP), mouse enter/leave recomputes the target from current hover/selected state, and selection refreshes all containers through the visual tree. Horizontal overflow now uses an auto horizontal scrollbar and vertical navigation uses an auto vertical scrollbar.
+- **UI-4 / readability:** added explicit WPF templates for `ComboBox`, `ComboBoxItem`, `ListBoxItem`, and `PasswordBox`. Normal, hover, highlighted, selected, focused, and disabled states use dark surfaces and readable light text; the dropdown popup is dark with compact NOVA rounding.
+- **OCR:** capture remains local and explicit. The region selector supplies physical pointer coordinates; capture uses 32bpp ARGB and PNG decoding into BGRA8. Small captures are bicubicly scaled 2x for better OCR fidelity. OCR text is normalized to remove NUL/control artifacts and preserve newline/tab structure. English and optional Russian known-text images are covered in the test harness. A live OCR package/screen check remains hardware/user-language-dependent.
+- **VPN / INCY:** NOVA now reports only findings from the real registered URI handler and running executable/process. It does not fabricate a server list or connection state. The existing Radmin IPv4/TCP/TLS transfer path remains unchanged. If INCY exposes no machine-readable status/API, NOVA explicitly reports that server and connection state are unavailable.
+- **Performance:** the audio-reactive 16 ms dispatcher tick was reduced to 33 ms; geometry construction remains cached when size/state/audio reactive input are unchanged. Existing 250 ms productivity/media pulse, 1/2/15-second refresh timers and disposal paths remain bounded. StreamGeometry is no longer rebuilt during dimension transitions solely by the `_isDimensionsAnimating` guard.
+- **Remote:** the existing Remote module remains an honest unavailable module and does not claim remote control functionality.
+
+### Verification status
+
+- **BUILD VERIFIED:** v6.1.3 Debug and Release builds passed; complete test harness passed **43/43** in both configurations; `git diff --check` passed.
+- **DEFECT COVERAGE:** focused test `defect recovery controls use readable templates and centralized nav sizing` validates template presence and removal of the local adaptive navigation width source.
+- **RUNTIME / GUI: NOT VERIFIED** until the published v6.1.3 executable is started and the visible transitions, hover, dropdowns, OCR and available INCY state are exercised.
+- **RUNTIME / GUI VERIFIED:** v6.1.3 process `27200` stayed responsive and UI Automation found visible `Панель NOVA`. A second launch process exited and no second NOVA process remained. UI Automation measured expanded geometry `589x779`, found a live ComboBox, and measured navigation hover width `69 -> 110 -> 100 DIP` with no stuck hover state. Opening a dropdown through UI Automation was not completed after the selected widget's control set changed; template behavior and the live control were verified separately.
+- **OCR MULTILINGUAL: NOT VERIFIED** for a Russian language pack when none is installed; the test runs Russian recognition only if `ru-*` is available.
+- **INCY SERVERS / CONNECTION STATUS: NOT AVAILABLE** because the repository and installed registration expose only URI commands, with no verified server/status API.
+
+## NOVA Profiles — local v6.1.4 build (2026-11-18)
+
+### Implemented
+
+- Added a production profile document in `%LOCALAPPDATA%\NOVA\TaskBar\profiles.json` with versioned JSON, atomic temporary-file replace, corrupted-file backup, built-in profiles `Default`, `Work`, `Gaming`, `Focus`, `Multimedia`, custom CRUD/duplicate/rename/delete and persisted active profile/state.
+- Added supported profile snapshots for dock edge, capsule size, widget icon size, topmost/hover/timer/animation/audio-reactive behavior, browser adaptation, monitor visibility, selected widget, visible widget list and notification enable/suppress flags.
+- Integrated profile application into existing `PanelPreferences`, `WidgetRegistry`, shell layout, audio-reactive settings, notification timer and tray lifecycle. Switching applies one atomic snapshot and updates the live UI, selected widget and dock geometry.
+- Added activation rules for running process names, time schedules with weekdays and overnight ranges, fullscreen state and default output audio device ID. Process detection is checked every 5 seconds; Core Audio exposes device-change events and refreshes on them.
+- Implemented priority sorting, deterministic tie-break by profile ID, activation delay, per-rule cooldown, manual override with automation pause, resume automation control and fallback to `Default` when no rule matches.
+- Added a Profiles settings section with current profile/source indicator, quick profile switching, built-in/custom profile list, name editing, capture-settings action, enable/duplicate/rename/delete actions, visual rule editor, rule removal, activation history and automation status.
+- Profile changes persist safely; corrupted profile JSON is copied to a `.corrupt-*` backup and the built-in default document remains usable.
+
+### Trigger support and limitations
+
+- **Supported:** process names, local time/weekday schedules, fullscreen state, Core Audio default output device changes.
+- **Not supported from current OS/app APIs:** arbitrary display topology changes and arbitrary user-defined system conditions beyond the supported process/time/fullscreen/audio categories. They are not presented as available.
+- **Manual override:** manual activation pauses automation until the user presses `Возобновить автоматизацию`; disabling automation falls back to Default and remains paused.
+- **Hysteresis:** activation delay and a 30-second-or-rule-configured cooldown prevent rapid automatic changes. UI settings changes in an active profile update that profile snapshot unless the profile switch is in progress.
+
+### Verification
+
+- `dotnet build` passed. Debug and Release test harnesses passed **45/45**.
+- Profile tests cover built-in initialization, custom CRUD/duplicate/rename/delete, snapshot persistence across store restart, process rule activation delay, priority, manual override/resume and missing-process fallback.
+- **RUNTIME VERIFIED:** v6.1.4 process `15560` remained responsive. UI Automation found visible `Панель NOVA`, opened its expanded workspace and Settings, found `◎ Profiles`, opened the Profiles section, and observed `Текущий профиль: Default`, `Источник: запасной профиль Default` and `Автоматизация активна.`.
+- **MANUAL SWITCH UNIT VERIFIED:** manual activation, automation pause and resume are covered by the test harness. Live ComboBox item selection via UI Automation was not confirmed in this session.
+- Core Audio device switching, process-triggered app switches, fullscreen detection and rapid cooldown behavior remain partially verified at unit/backend level and not as a full interactive end-to-end scenario.
+- Published ZIP: `build/NOVA-Taskbar-v6.1.4-profiles-win-x64.zip`; package SHA-256: `f72cc66fc3d42fa626f25b90402d82dad39c0782750b40d21d8c29e166e5eac3`.
+
+## Music, layout and scrolling improvement — v6.1.5 (2026-11-19)
+
+### Scope
+
+- Replace fake or unsupported lyric presentation in the compact music capsule with a three-line real-timestamp view driven only by loaded LRC timing and Windows Media Session playback position.
+- Compact the expanded workspace shell, navigation/content gaps and major transfer list heights so controls fit without unnecessary outer scrolling.
+- Preserve plain-text lyric fallback, manual lyric seeking, existing track controls, settings, resizing, docking, shutter and profile behavior.
+
+### Estimates and critical path
+
+- Optimistic: 4–6 hours.
+- Realistic: 8–12 hours.
+- Problem case: 16–24 hours for runtime font/DPI, XAML sizing or media-session regressions.
+- Critical path: media timestamp source -> three-line capsule renderer -> layout pass -> test/build -> release launch/shortcut verification.
+
+### Implementation status
+
+- Compact music area will show previous/current/next lines only after a real timed LRC document is loaded.
+- Plain-text or unavailable lyrics leave the normal compact and expanded music UI intact.
+- The current line uses the real `MediaSnapshot.CurrentPosition`; no simulated timestamp or position interpolation is added.
+- Transition code moves and fades only the current lyric line when its real line index changes.
+- Expanded shell and Widget Transfer fixed heights/gaps have been reduced to avoid oversized margins and excessive fixed list space.
+
+### Verification
+
+- Release build/publish and ZIP/shortcut checks are complete.
+- Test harness passed **45/45** in Release, including source checks for three compact lyric lines and media-position-only synchronization.
+- The v6.1.5 process remained responsive after launch and loaded the rebuilt publish directory.
+- Visible expanded music lyrics, full DPI/layout states, full File Transfer interactions and second-device playback remain **NOT VERIFIED** in this session.
+
+## Compact playback-state removal — v6.1.6 (2026-11-19)
+
+- Removed the compact capsule `Играет/Пауза` text and its separate visibility state.
+- Media title, artist and real three-line lyric block now remain the only compact music text content.
+
+## Centered compact music lyrics — v6.1.7 (2026-11-19)
+
+- Center-align all three real synced lyric lines horizontally in the compact music capsule.
+
+## Long compact lyric overflow — v6.1.8 (2026-11-19)
+
+- Keep the lyric font sizes unchanged and remove text ellipsis.
+- Long previous/current/next lyric lines scroll horizontally inside their own clipped row; short lines remain centered.
+- Marquee motion pauses at both ends, resets when the synced line changes, and recalculates after layout/DPI width changes.
+- Release build succeeded with 0 warnings/errors; the Windows client test harness passed **45/45**.
+- Self-contained x64 publish and ZIP/SHA completed; desktop shortcut points to v6.1.8 and the process starts responsive.
+- **NOT VERIFIED:** visual marquee behavior with an actually loaded unusually long lyric line and at alternate DPI/window sizes.
+
+## NOVA Connect — Android local file transfer (2026-11-19)
+
+### Existing architecture
+
+- Windows LAN discovery is UDP multicast (`239.255.42.99:45984`) with a version-1 JSON announcement carrying device ID/name, TCP port, SHA-256 certificate fingerprint, and timestamp. It is not mDNS/DNS-SD.
+- Windows direct transfer uses TCP/TLS mutual certificate authentication, reciprocal fingerprint trust, 4-byte big-endian length-prefixed JSON frames (64 KiB maximum), a consent-gated `offer` → `decision` → raw file bytes → `complete` exchange, 64 KiB streaming buffers, and SHA-256 integrity verification.
+- Incoming approval, safe destination path/name handling, collision-safe file creation, transfer progress/history and WebRTC/direct VPN cancellation already exist in `LocalTransferService`.
+- Android source is implemented under `clients/android` and uses the existing LAN protocol; Android Studio/JDK, SDK platform 37, build tools 36, command-line tools, and Gradle wrapper distribution 9.3.1 are available locally. No attached `adb` device or configured emulator is detected.
+
+### Scope and estimate
+
+- Optimistic: 4–6 working days.
+- Realistic: 8–12 working days.
+- Problem case: 3–4 weeks if Android/Windows TLS interoperability, network isolation, or Android background lifecycle requires substantial iteration.
+- Critical path: interoperable persistent Android certificate identity → reciprocal manual fingerprint pairing → UDP discovery and TCP/TLS protocol → consented send/receive/cancel/progress/history → cross-platform integration tests → APK/Windows release packages.
+
+### Implementation and verification
+
+- Implemented the Kotlin Android app in `clients/android`: persistent device identity and pinned peers, compatible multicast discovery and manual pairing, foreground TCP/TLS listener, reciprocal authenticated transfer, explicit incoming approval, streaming progress/speed, cancellation, SAF receive destination, and transfer history. Existing Windows transfer was retained.
+- Windows manual-pairing UI now shows local IPv4 endpoints and the NOVA listener port. Android release signing material is local and ignored by Git; back up the keystore and its properties securely to preserve app update signing.
+- Estimates above were planning estimates; actual implementation and release work completed in this task.
+- Android automated verification: `:app:testDebugUnitTest` passed (3 tests); `:app:lintRelease` passed (0 errors, 10 warnings); `:app:assembleRelease` succeeded and APK signature verification passed.
+- Windows automated regression harness passed **45/45**; self-contained `win-x64` Release v6.1.9 publish succeeded.
+- Android APK: `clients/android/app/build/outputs/apk/release/app-release.apk` (version 1.0.0, versionCode 2), SHA-256 `d260cea35fa8171a9dfbdbea2677988eb5a7988d34f9f8eec6359d0771ab35b9`.
+- Android package: `build/NOVA-Connect-v1.0.0-android.zip`, SHA-256 `2a7775935870a5a45e8d1579b21fa202ea0a5cfee2a5560edec9b0cdc0f59e94`.
+- Windows executable: `build/NOVA-Taskbar-Release-v6.1.9-NovaConnect/publish/Nova.TaskBar.exe`, FileVersion 6.1.9.0, SHA-256 `13cf3482c923d30f13899c12f7fe5677dc440c36cc775e9a3075f6261e02c6bb`.
+- Windows package: `build/NOVA-Taskbar-v6.1.9-nova-connect-win-x64.zip`, SHA-256 `c27888fa76a49376758a2fbd4c1a0f7db7c80bfe4f650e54c9e03b92abf22191`. ZIP paths were verified portable, including `assets/schedules/tsarskoe_selo_kupchino.txt`.
+- Desktop shortcut target, working directory, and icon were verified against the v6.1.9 publish directory. The old v6.1.8 process has no main window and did not exit on a graceful close request; it was not force-stopped, so the running app was **NOT UPDATED**.
+- **NOT VERIFIED / NOT AVAILABLE:** no Android phone or emulator was attached, so live discovery, TLS interoperability, UI behavior on-device, and real Android↔Windows transfers in either direction were not tested. No visual DPI/resizing test was performed.
+
+## NOVA Connect TLS interoperability fix — Android 1.0.1 (2026-11-19)
+
+- The reported Android outgoing transfers failed during TLS negotiation with an OpenSSL RSA internal error; Windows never received the file offer. The exact device-specific TLS failure could not be captured because no Android device was attached for diagnostics.
+- Android now uses TLS 1.2 for both outgoing and incoming LAN sockets instead of also offering TLS 1.3. The Windows TLS implementation already negotiates TLS 1.2, and still accepts the same mutually authenticated certificate-pinned protocol.
+- Added unit coverage for selecting TLS 1.2 and rejecting devices that do not support it. Android tests passed **4/4**; `:app:lintRelease` passed; `:app:assembleRelease` succeeded. APK signature verification passed. Build emitted the existing Android Gradle Plugin warning that compile SDK 37 is newer than its tested-through 36.1.
+- Updated Android Release is version **1.0.1** (versionCode 3): `clients/android/app/build/outputs/apk/release/app-release.apk`, SHA-256 `e888520fc703761e6b301febcfd690fb9f9722f2f8e8fa68c5a6990e5b6d951f`.
+- Updated Android package: `build/NOVA-Connect-v1.0.1-android.zip`, SHA-256 `e7881614c8833fee145f69d777a64c99c5b04e2aece316bb4e3409cdce6372a2`.
+- **NOT VERIFIED:** a physical-device Android↔Windows transfer after this mitigation; `adb devices` returned no attached devices. The diagnosis is based on the Android-side TLS error and failure occurring before a Windows offer, not a reproduced device trace.
+
+## NOVA Connect automatic LAN discovery and quick send — v6.1.10 / Android 1.0.2 (2026-11-19)
+
+- Existing multicast discovery was present on both clients, but manual address/port controls were prominent and routers can suppress multicast. Both clients now also announce to their active IPv4 subnet broadcast addresses, while continuing to listen for both announcement types on the existing discovery port. The listener port remains dynamic and is learned from each announcement.
+- Android now presents nearby devices first and hides manual IP/port/pairing-code fields under advanced controls. Windows hides Direct VPN address/port fields unless that transport is selected. On Windows, files can be dropped directly onto an online discovered device to send over LAN.
+- Security remains unchanged: first-time device fingerprint confirmation is required on both devices, and every incoming file still requires user approval. Manual pairing remains available as a fallback.
+- Automated checks: Android unit tests **5/5**, Release lint and APK build passed; Windows Transfer Engine harness **22/22**, Windows client harness **45/45**, and Release build passed. One initial transfer-harness run had a transient WebRTC lifecycle timeout; the full rerun passed. The Android Gradle plugin continues to warn that SDK 37 is newer than its tested-through SDK 36.1.
+- Android APK v1.0.2: `clients/android/app/build/outputs/apk/release/app-release.apk`, SHA-256 `57c59d9d4472dd41c3e0dfb70d914fc4b540c730f4805f1b55a7a56ca4c0bdda`.
+- Android package: `build/NOVA-Connect-v1.0.2-android.zip`, SHA-256 `ff8d4b2651321590b038395b15afe2c42dcc86171a041f1a6557fee9859b815b`.
+- Windows self-contained x64 executable v6.1.10: `build/NOVA-Taskbar-Release-v6.1.10-NovaConnect/publish/Nova.TaskBar.exe`, SHA-256 `7b57ab7d93c43d920d9ee6712669d99b810cb7f81fc86908b321c5900cc2e551`.
+- Windows package: `build/NOVA-Taskbar-v6.1.10-nova-connect-win-x64.zip`, SHA-256 `e78dc84f1884fabf1f7f1d72bc7032c999ebc22ee376a690f7fd9b91fec886be`; required publish assets and portable archive paths verified. Desktop shortcut target, working directory, and icon point to the v6.1.10 executable.
+- **NOT VERIFIED:** automatic discovery and real transfers between the user's Android phone and Windows PC, and interactive GUI drag-and-drop behavior. No Android device was attached (`adb devices` empty), and Wi-Fi client isolation/firewall behavior depends on the network. The currently running Windows process is still v6.1.9; it was not force-stopped.
+
+## Windows device unpair action — v6.1.11 (2026-11-19)
+
+- Added **«Удалить сопряжение»** for the selected trusted device in the Windows Transfer widget. A confirmation explains that trust is removed on this PC only and new transfers will be rejected. If the device is still online it remains discoverable as unpaired; if offline, it disappears from the saved list.
+- The displayed trust state for Internet-only contacts now reflects the local trust store instead of always showing trusted.
+- Added a persistence test for removing a trusted fingerprint. Windows Transfer Engine harness passed **23/23**, Windows client harness passed **45/45**, Release build and self-contained publish succeeded.
+- Windows executable v6.1.11: `build/NOVA-Taskbar-Release-v6.1.11-NovaConnect/publish/Nova.TaskBar.exe`, SHA-256 `130f351ab76a3eca9ea859527aaf17b4e15f17870493bc84b01ba043d80427f0`.
+- Windows ZIP: `build/NOVA-Taskbar-v6.1.11-device-unpair-win-x64.zip`, SHA-256 `35375c4348c05f5f4ce4a98674cff0764605e00f886353c97d1699b309fdf96d`.
+- Desktop shortcut target, working directory, and icon point to v6.1.11. The currently running process remains v6.1.10; it was not force-stopped, so restart NOVA from the shortcut to see the new action.
+
+## Windows pairing crash after Android TLS-key rotation — v6.1.12 (2026-11-19)
+
+- Windows Application/.NET Runtime logs confirmed the crash: `PeerTrustStore.Trust` threw an unhandled `InvalidOperationException` when the Android device kept its device ID but announced its new certificate fingerprint. `TrustDevice_Click` did not handle that expected identity-rotation case.
+- Pairing now detects a previously trusted fingerprint for the same device ID and asks for explicit confirmation before replacing it. The trust-store update is persisted atomically; ordinary trust still rejects an identity change unless the user confirms it. Expected storage/validation failures are shown in the UI rather than terminating the application.
+- Added a regression test for replacing a trusted identity, persistence after reload, and rejection of stale replacement requests. Transfer Engine harness passed **24/24**, Windows client harness passed **45/45**, and self-contained Release publish succeeded.
+- Windows executable v6.1.12: `build/NOVA-Taskbar-Release-v6.1.12-NovaConnect/publish/Nova.TaskBar.exe`, SHA-256 `6b1b9758ee098f54b96ea73882296529564909f4944131ee40a56703593f9ea7`.
+- Windows ZIP: `build/NOVA-Taskbar-v6.1.12-device-unpair-win-x64.zip`, SHA-256 `7ad4e37a0511d592c51e21f127179130858c89dac69ed65a8ff9fcb95a28764f`; all **502** publish entries and asset paths were checked.
+- Desktop shortcut target, working directory, and icon point to v6.1.12. The updated executable was launched and remained running. **NOT VERIFIED:** repeating Android pairing on the physical phone and performing a transfer after the update.
+
+## NOVA Connect Android TLS RSA key fix — 1.0.3 (2026-11-19)
+
+- The Android screenshot showed Conscrypt's `RSA routines:OPENSSL_internal:internal error` during `SSLServerSocket.startHandshake()`. The exact failure is an incompatible Android Keystore padding authorization: Conscrypt's RSA TLS operation uses `RSA/ECB/NoPadding`, which the existing identity key did not allow.
+- Android now authorizes `ENCRYPTION_PADDING_NONE` for the TLS RSA identity while retaining PKCS#1 and the existing mutual-TLS, pinned-certificate trust model. Android 1.0.3 creates a versioned identity key and removes the obsolete alias after loading the new key; the changed certificate fingerprint means the Windows side must remove the old pairing and pair again.
+- Retained TLS 1.2 for LAN sockets. Updated the Android README with the reason and the one-time pairing migration.
+- Android automated tests passed **5/5**; `:app:lintRelease` and `:app:assembleRelease` succeeded. APK signature verification passed using the existing release signer. The only build warning is that Android Gradle Plugin 9.1.0 is tested through compile SDK 36.1 while this project targets 37.
+- Android APK v1.0.3 (versionCode 5): `clients/android/app/build/outputs/apk/release/app-release.apk`, SHA-256 `2ce9a31d2cb7bf220fb812967ad201c34b243b2d94774b1f5607ec53f180cf39`.
+- Android package: `build/NOVA-Connect-v1.0.3-android.zip`, SHA-256 `bb3c0a61b611623a0dded4870783c4273976a0f71eea128f21c01d525d34ce93`.
+- **NOT VERIFIED:** physical-device handshake and file transfer after the fix; no Android phone or emulator is attached (`adb` unavailable). Therefore the fix is supported by the exact Conscrypt/Keystore failure and successful build, but still needs a real transfer check after installing 1.0.3 and re-pairing Windows.
+
+## NOVA Connect Android TLS key follow-up — 1.0.4 (2026-11-19)
+
+- The next screenshot still showed the same Conscrypt RSA error on outgoing TLS. Review of the TLS 1.2 RSA path found a second missing Android Keystore authorization: `DIGEST_NONE`, needed when Conscrypt performs the RSA signature as a raw operation after computing the digest itself.
+- Android now authorizes `DIGEST_NONE` alongside SHA-256/384/512, `ENCRYPTION_PADDING_NONE`, and the existing RSA signature modes. The identity alias advances to v3 and removes both earlier aliases after successful initialization, ensuring an existing 1.0.2/1.0.3 install does not keep using the old key.
+- Android 1.0.4 also rotates the certificate fingerprint; Windows 6.1.12 will ask for explicit replacement on confirmation. Build/test/ZIP hashes are recorded after release verification.
+- Android unit tests passed **5/5**; Release lint and APK build succeeded. APK signature verification passed with the same signer as 1.0.2/1.0.3.
+- Android APK v1.0.4 (versionCode 6): `clients/android/app/build/outputs/apk/release/app-release.apk`, SHA-256 `c2261de19b1e3e7ec19ac7aed95a3069999be332fdb1fe31d3719b6e3094e119`.
+- Android package: `build/NOVA-Connect-v1.0.4-android.zip`, SHA-256 `22772874a3f71d86189b8247b82025044d8836810908d86fcd712677c3464e6d`.
+- **NOT VERIFIED:** the screenshot does not show the installed Android app version, and the phone cannot be queried through ADB here. The exact physical device may still be using an earlier APK; a real transfer after installing 1.0.4 remains required.
+
+## Manual LAN discovery refresh — Windows 6.1.13 / Android 1.0.5 (2026-11-19)
+
+- Added an **Обновить** control next to nearby devices in Windows and **Refresh** on Android. Each action restarts only that device's UDP discovery socket/listener and announcement loop; it does not restart the app, TCP transfer listener, foreground service, or active transfers.
+- Windows refresh also clears stale online discovery entries, then immediately re-announces over multicast and IPv4 broadcast. Android reselects its active Wi-Fi interface, reacquires its multicast lock, clears discovery failure state, and republishes its announcement. The Windows announcement loop now retries after network-interface enumeration errors instead of dying.
+- Added a Windows regression scenario asserting discovery can refresh while the transfer listener remains running on the same TCP port. Android verification and release results will be recorded after the paired builds.
+- **NOT VERIFIED:** real Wi-Fi/interface handoff and button behavior on the user's phone and PC; no phone is attached to ADB.
+
+### Verification and release
+
+- **BUILD VERIFIED:** Windows self-contained `win-x64` Release v6.1.13 published successfully. Android `:app:assembleRelease` succeeded for v1.0.5 (versionCode 7); `:app:testDebugUnitTest` and `:app:lintRelease` also succeeded. Gradle emitted the existing warning that AGP 9.1.0 has only been tested through compile SDK 36.1 while this project uses SDK 37.
+- **FUNCTIONAL VERIFIED:** Windows Transfer Engine harness passed 25/25 scenarios, including refresh preserving the TCP transfer listener and port; Windows client harness passed 45/45. Android unit tests passed.
+- Windows executable: `build/NOVA-Taskbar-Release-v6.1.13-NovaConnect/publish/Nova.TaskBar.exe`, FileVersion 6.1.13.0, SHA-256 `ddafe03d06b91e6e77be419a393f8b16a1338bc18b1344243585a7aa92612d3f`.
+- Windows ZIP: `build/NOVA-Taskbar-v6.1.13-discovery-refresh-win-x64.zip`, SHA-256 `d60c2361be70672bbbefb78bf52b2b881b88db30306d16fdd4a77a080928a14b`. All 502 entries use normalized paths and their content hashes match the publish output.
+- Android APK v1.0.5 (versionCode 7): `build/NOVA-Connect-v1.0.5.apk`, SHA-256 `b9adb1d39c3d360e17c7d23f649d0b797419f8d4f0098ff8840ca1dbb743df20`. APK v2 signature verification succeeded with the NOVA Connect Release certificate.
+- Android ZIP: `build/NOVA-Connect-v1.0.5-android.zip`, SHA-256 `368e4322a4705c3cf7bac8447456f4181d3ef151c9bb8cc858f28543e4bca891`.
+- Desktop and Start Menu shortcuts target the v6.1.13 executable; working directory and icon path were verified, and the target exists. The already-running process remains v6.1.12.0 and was left untouched; loading v6.1.13 in the running UI is **NOT VERIFIED**.
+- **NOT VERIFIED:** physical Android/Windows discovery recovery after Wi-Fi or interface changes and interactive GUI behavior of the new controls. `adb devices -l` reported no connected device.

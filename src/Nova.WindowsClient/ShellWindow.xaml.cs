@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -104,11 +105,14 @@ public partial class ShellWindow : Window
         LocalTransferService transferService,
         TrainReminderScheduler trainReminderScheduler,
         NotificationCenterService notificationCenter,
-        ProductivityService productivityService)
+        ProductivityService productivityService,
+        ProfileService? profileService = null)
     {
         InitializeComponent();
         _transferService = transferService;
         _productivityService = productivityService ?? throw new ArgumentNullException(nameof(productivityService));
+        _profileService = profileService ?? new ProfileService(new ProfileStore(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NOVA", "TaskBar")));
         _trainReminderScheduler = trainReminderScheduler;
         InitializeNotificationCenterUi(notificationCenter);
         InitializeProductivityUi(_productivityService);
@@ -139,6 +143,9 @@ public partial class ShellWindow : Window
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => item.Tag is string tag &&
                 tag == transferService.Settings.TransportPreference.ToString());
+        DirectVpnEndpointPanel.Visibility = transferService.Settings.TransportPreference == TransferTransportPreference.DirectVpn
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         _loadingTransportPreference = false;
 
         DevicesList.ItemsSource = _devices;
@@ -149,6 +156,7 @@ public partial class ShellWindow : Window
         ObsSceneComboBox.ItemsSource = _obsScenes;
         LyricsLinesList.ItemsSource = _lyricsLines;
         InitializeAudioMixerUi();
+        InitializeProfilesUi();
 
         _transferService.IncomingOffer += OnIncomingOffer;
         _transferService.WebRtcIncomingOffer += OnWebRtcIncomingOffer;
@@ -219,6 +227,7 @@ public partial class ShellWindow : Window
         var widget = _widgetHost.Select(id, activate);
         IslandHeaderTitle.Text = widget.Title;
         IslandHeaderSubtitle.Text = widget.Subtitle;
+        Dispatcher.BeginInvoke(new Action(UpdateWidgetNavigationWidths), DispatcherPriority.Background);
         if (save) SchedulePreferenceSave();
     }
 
@@ -373,6 +382,7 @@ public partial class ShellWindow : Window
     private async Task DisconnectObsAsync()
     {
         _obsRefreshTimer.Stop();
+        DisposeProfilesUi();
         var client = _obsClient;
         _obsClient = null;
         if (client is not null)
@@ -649,8 +659,8 @@ public partial class ShellWindow : Window
         InitializeOcrLanguages();
         RefreshObsInstallationStatus();
         DirectVpnPortText.Text = _transferService.TcpPort > 0
-            ? $"Ваш TCP-порт NOVA: {_transferService.TcpPort} · сообщите его доверенному получателю"
-            : "Direct VPN listener не запущен · перезапустите NOVA с доступной сетью";
+            ? $"Ваши IPv4-адреса: {GetLocalIpv4Addresses()} · TCP-порт NOVA: {_transferService.TcpPort}"
+            : "LAN listener не запущен · перезапустите NOVA с доступной сетью";
         InternetEndpointBox.Text = _transferService.InternetSettings.Endpoint ?? "";
         OnInternetStatusChanged(_transferService.Internet.Status);
         RefreshDevices();
@@ -873,6 +883,8 @@ public partial class ShellWindow : Window
                 : (W: 520d, H: 78d);
             targetWidth = size.W * _sizeScale;
             targetHeight = size.H * _sizeScale;
+            MinWidth = 0;
+            MinHeight = 0;
         }
 
         if (_isGamingOverlay || _state == PanelState.Compact)
@@ -908,14 +920,18 @@ public partial class ShellWindow : Window
                 animations.Add((property, from, to));
         }
 
-        Width = targetWidth;
-        Height = targetHeight;
-        Left = targetLeft;
-        Top = targetTop;
         var duration = TimeSpan.FromMilliseconds(_ready && _enableMotion ? 230 : 0);
         if (duration == TimeSpan.Zero || animations.Count == 0)
         {
-            CompleteDimensionsChange(animationVersion);
+            BeginAnimation(WidthProperty, null);
+            BeginAnimation(HeightProperty, null);
+            BeginAnimation(LeftProperty, null);
+            BeginAnimation(TopProperty, null);
+            Width = targetWidth;
+            Height = targetHeight;
+            Left = targetLeft;
+            Top = targetTop;
+            CompleteDimensionsChange(animationVersion, targetWidth, targetHeight, targetLeft, targetTop);
             return;
         }
 
@@ -925,16 +941,30 @@ public partial class ShellWindow : Window
             var (property, from, to) = animations[index];
             var animation = new DoubleAnimation(from, to, duration) { EasingFunction = easing };
             if (index == animations.Count - 1)
-                animation.Completed += (_, _) => CompleteDimensionsChange(animationVersion);
+                animation.Completed += (_, _) =>
+                    CompleteDimensionsChange(animationVersion, targetWidth, targetHeight, targetLeft, targetTop);
             BeginAnimation(property, animation);
         }
     }
 
-    private void CompleteDimensionsChange(int animationVersion)
+    private void CompleteDimensionsChange(
+        int animationVersion,
+        double targetWidth,
+        double targetHeight,
+        double targetLeft,
+        double targetTop)
     {
         if (animationVersion != _dimensionsAnimationVersion)
             return;
 
+        BeginAnimation(WidthProperty, null);
+        BeginAnimation(HeightProperty, null);
+        BeginAnimation(LeftProperty, null);
+        BeginAnimation(TopProperty, null);
+        Width = targetWidth;
+        Height = targetHeight;
+        Left = targetLeft;
+        Top = targetTop;
         _isDimensionsAnimating = false;
         if (_ready && !_isGamingOverlay)
         {
@@ -1091,6 +1121,7 @@ public partial class ShellWindow : Window
     private void SettingsGaming_Click(object sender, RoutedEventArgs e) => SetSettingsCategory("Gaming");
     private void SettingsMonitoring_Click(object sender, RoutedEventArgs e) => SetSettingsCategory("Monitoring");
     private void SettingsAppearance_Click(object sender, RoutedEventArgs e) => SetSettingsCategory("Appearance");
+    private void SettingsProfiles_Click(object sender, RoutedEventArgs e) => SetSettingsCategory("Profiles");
 
     private void WidgetNavigation_Click(object sender, RoutedEventArgs e)
     {
@@ -1237,7 +1268,7 @@ public partial class ShellWindow : Window
             WidgetNavigationHost.Width = double.NaN;
             WidgetNavigationHost.Margin = new Thickness(0, 0, 0, 10);
             WidgetNavigationList.ItemsPanel = (ItemsPanelTemplate)FindResource("HorizontalWidgetNavigationPanel");
-            WidgetNavigationScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            WidgetNavigationScroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             WidgetNavigationScroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
         }
     }
@@ -1245,13 +1276,51 @@ public partial class ShellWindow : Window
     private void WidgetNavigation_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (sender is System.Windows.Controls.Button button)
-            AnimateNavigationButton(button, 110);
+            AnimateNavigationButton(button, GetNavigationTargetWidth(button));
     }
 
     private void WidgetNavigation_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (sender is System.Windows.Controls.Button button)
-            AnimateNavigationButton(button, button.DataContext is WidgetDefinition { IsSelected: true } ? 100 : 56);
+            AnimateNavigationButton(button, GetNavigationTargetWidth(button));
+    }
+
+    private double GetNavigationTargetWidth(System.Windows.Controls.Button button)
+    {
+        var selected = button.DataContext is WidgetDefinition { IsSelected: true };
+        if (button.IsMouseOver)
+            return 110;
+        return selected ? 100 : 56;
+    }
+
+    private void UpdateWidgetNavigationWidths()
+    {
+        if (WidgetNavigationList.ItemContainerGenerator.Status != GeneratorStatus.ContainersGenerated)
+            return;
+        for (var index = 0; index < _widgetRegistry.Widgets.Count; index++)
+        {
+            if (WidgetNavigationList.ItemContainerGenerator.ContainerFromIndex(index) is
+                FrameworkElement { DataContext: WidgetDefinition } container)
+            {
+                var button = FindVisualChild<System.Windows.Controls.Button>(container);
+                if (button is not null)
+                    AnimateNavigationButton(button, GetNavigationTargetWidth(button));
+            }
+        }
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+                return match;
+            var descendant = FindVisualChild<T>(child);
+            if (descendant is not null)
+                return descendant;
+        }
+        return null;
     }
 
     private void AnimateNavigationButton(System.Windows.Controls.Button button, double targetWidth)
@@ -1337,6 +1406,7 @@ public partial class ShellWindow : Window
         GamingSettingsPanel.Visibility = category == "Gaming" ? Visibility.Visible : Visibility.Collapsed;
         MonitoringSettingsPanel.Visibility = category == "Monitoring" ? Visibility.Visible : Visibility.Collapsed;
         AppearanceSettingsPanel.Visibility = category == "Appearance" ? Visibility.Visible : Visibility.Collapsed;
+        ProfilesSettingsPanel.Visibility = category == "Profiles" ? Visibility.Visible : Visibility.Collapsed;
 
         var activeBrush = new WpfSolidColorBrush(WpfColor.FromArgb(0x38, 0xA9, 0x91, 0xFF));
         var idleBrush = new WpfSolidColorBrush(WpfColor.FromArgb(0x16, 0xFF, 0xFF, 0xFF));
@@ -1347,7 +1417,8 @@ public partial class ShellWindow : Window
             (SettingsWeatherButton, "Weather"),
             (SettingsGamingButton, "Gaming"),
             (SettingsMonitoringButton, "Monitoring"),
-            (SettingsAppearanceButton, "Appearance")
+            (SettingsAppearanceButton, "Appearance"),
+            (SettingsProfilesButton, "Profiles")
         })
         {
             button.Background = key == category ? activeBrush : idleBrush;
@@ -1512,6 +1583,9 @@ public partial class ShellWindow : Window
         try
         {
             _transferService.Settings.SetTransportPreference(preference);
+            DirectVpnEndpointPanel.Visibility = preference == TransferTransportPreference.DirectVpn
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             SendWebRtcFilesButton.Content = preference == TransferTransportPreference.DirectVpn
                 ? "Direct VPN / TCP-TLS"
                 : "WebRTC / Internet";
@@ -1535,9 +1609,32 @@ public partial class ShellWindow : Window
         foreach (var device in snapshot) _devices.Add(device);
         DevicesList.SelectedItem = _devices.FirstOrDefault(x => x.DeviceId == selectedId);
         if (snapshot.Count == 0)
-            TransferStatusText.Text = "Устройства появятся здесь, когда NOVA запущена на другом компьютере в этой сети.";
+            TransferStatusText.Text = "Поиск устройств идёт автоматически. Запустите NOVA на втором устройстве и подключите его к той же сети.";
         else
-            TransferStatusText.Text = $"Найдено устройств: {snapshot.Count}. Для передачи подтвердите их код безопасности.";
+            TransferStatusText.Text = $"Найдено устройств: {snapshot.Count}. NOVA автоматически определила адрес и порт; первый раз подтвердите устройство.";
+    }
+
+    private async void RefreshDiscovery_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshDiscoveryButton.IsEnabled = false;
+        var oldContent = RefreshDiscoveryButton.Content;
+        RefreshDiscoveryButton.Content = "Поиск…";
+        try
+        {
+            await _transferService.RefreshDiscoveryAsync();
+            RefreshDevices();
+            TransferStatusText.Text = "Поиск устройств обновлён. Ожидаю объявления из локальной сети…";
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or
+                                   System.Net.Sockets.SocketException or UnauthorizedAccessException)
+        {
+            TransferStatusText.Text = $"Не удалось обновить поиск устройств: {ex.Message}";
+        }
+        finally
+        {
+            RefreshDiscoveryButton.Content = oldContent;
+            RefreshDiscoveryButton.IsEnabled = true;
+        }
     }
 
     private void TrustDevice_Click(object sender, RoutedEventArgs e)
@@ -1553,14 +1650,62 @@ public partial class ShellWindow : Window
             return;
         }
 
+        var previousIdentity = _transferService.TrustedPeers.GetAll()
+            .FirstOrDefault(peer => peer.Device.DeviceId == device.DeviceId &&
+                !string.Equals(peer.Fingerprint, device.Fingerprint, StringComparison.OrdinalIgnoreCase));
         var code = FormatFingerprint(device.Fingerprint);
-        var result = System.Windows.MessageBox.Show(this,
-            $"На обоих компьютерах откройте раздел «Передача» и сравните полный код устройства.\n\nУстройство: {device.DisplayName}\nКод: {code}\n\nПодтвердить доверие можно только при полном совпадении кодов.",
-            "Проверка устройства", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+        var message = previousIdentity is null
+            ? $"На обоих компьютерах откройте раздел «Передача» и сравните полный код устройства.\n\nУстройство: {device.DisplayName}\nКод: {code}\n\nПодтвердить доверие можно только при полном совпадении кодов."
+            : $"Устройство «{device.DisplayName}» уже сопряжено, но сейчас объявляет другой сертификат.\n\nНовый код: {code}\n\nПродолжайте только если вы обновили NOVA на телефоне и полный новый код совпадает. Старое сопряжение будет заменено.";
+        var result = System.Windows.MessageBox.Show(this, message,
+            previousIdentity is null ? "Проверка устройства" : "Замена ключа устройства",
+            System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
         if (result != System.Windows.MessageBoxResult.Yes) return;
-        _transferService.TrustDevice(device);
+        try
+        {
+            if (previousIdentity is null) _transferService.TrustDevice(device);
+            else _transferService.ReplaceTrustedDeviceIdentity(device, previousIdentity.Fingerprint);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            System.Windows.MessageBox.Show(this, $"Не удалось сохранить сопряжение: {ex.Message}", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         RefreshDevices();
-        TransferStatusText.Text = $"Устройство «{device.DisplayName}» подтверждено. Подтвердите NOVA на обоих компьютерах.";
+        TransferStatusText.Text = previousIdentity is null
+            ? $"Устройство «{device.DisplayName}» подтверждено. Подтвердите NOVA на обоих устройствах."
+            : $"Сопряжение с «{device.DisplayName}» обновлено; прежний сертификат удалён на этом ПК.";
+    }
+
+    private void RemoveTrustedDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (DevicesList.SelectedItem is not DiscoveredDevice device)
+        {
+            System.Windows.MessageBox.Show(this, "Сначала выберите устройство.", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!_transferService.TrustedPeers.IsTrusted(device.Fingerprint))
+        {
+            System.Windows.MessageBox.Show(this, "Выбранное устройство не сопряжено с этим ПК.", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var result = System.Windows.MessageBox.Show(this,
+            $"Удалить сопряжение с «{device.DisplayName}» на этом ПК?\n\nНовые передачи от этого устройства будут запрещены. Если оно сейчас онлайн, оно останется в списке как неподтверждённое.",
+            "Удалить сопряжение", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes) return;
+
+        if (!_transferService.RemoveTrustedDevice(device.Fingerprint))
+        {
+            System.Windows.MessageBox.Show(this, "Не удалось удалить сопряжение. Обновите список устройств и попробуйте снова.",
+                "NOVA", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+        RefreshDevices();
+        TransferStatusText.Text = $"Сопряжение с «{device.DisplayName}» удалено на этом ПК.";
     }
 
     private static string CreatePairingCode(string deviceId, string displayName, string fingerprint)
@@ -1568,6 +1713,22 @@ public partial class ShellWindow : Window
         var json = JsonSerializer.SerializeToUtf8Bytes(new PairingCodePayload(deviceId, displayName, fingerprint));
         return "NOVA1:" + Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
+
+    private static string GetLocalIpv4Addresses() =>
+        string.Join(", ", System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(adapter => adapter.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                              adapter.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+            .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
+            .Select(unicast => unicast.Address)
+            .Where(address => address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                              !System.Net.IPAddress.IsLoopback(address) &&
+                              !address.IsIPv6LinkLocal &&
+                              !address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
+            .Distinct()
+            .OrderBy(address => address.ToString(), StringComparer.Ordinal)
+            .Select(address => address.ToString())) is { Length: > 0 } addresses
+            ? addresses
+            : "not available";
 
     private void CopyPairingCode_Click(object sender, RoutedEventArgs e)
     {
@@ -1648,6 +1809,60 @@ public partial class ShellWindow : Window
                 _outgoingFiles.Add(new TransferFileRow(path));
     }
 
+    private void DevicesList_PreviewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop)
+            ? System.Windows.DragDropEffects.Copy
+            : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void DevicesList_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is not string[] paths) return;
+        var item = System.Windows.Controls.ItemsControl.ContainerFromElement(
+            DevicesList, e.OriginalSource as DependencyObject) as System.Windows.Controls.ListBoxItem;
+        var peer = item?.DataContext as DiscoveredDevice ?? DevicesList.SelectedItem as DiscoveredDevice;
+        if (peer is null)
+        {
+            System.Windows.MessageBox.Show(this, "Перетащите файлы на строку найденного устройства.", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!peer.IsAvailableOnLan || !peer.IsOnline)
+        {
+            System.Windows.MessageBox.Show(this, "Для локальной передачи устройство должно быть онлайн в той же сети.", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!peer.IsTrusted || !_transferService.TrustedPeers.IsTrusted(peer.Fingerprint))
+        {
+            DevicesList.SelectedItem = peer;
+            System.Windows.MessageBox.Show(this,
+                "Сначала выберите устройство и подтвердите совпадение отпечатков безопасности на обоих устройствах. После этого перетащите файлы ещё раз.",
+                "Безопасное сопряжение", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var droppedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path) || !droppedPaths.Add(path)) continue;
+            if (!_outgoingFiles.Any(row => string.Equals(row.Path, path, StringComparison.OrdinalIgnoreCase)))
+                _outgoingFiles.Add(new TransferFileRow(path));
+        }
+        var rows = _outgoingFiles
+            .Where(row => droppedPaths.Contains(row.Path) && row.Status == "Выбран")
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            System.Windows.MessageBox.Show(this, "В перетащенном списке нет доступных файлов.", "NOVA",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await SendFilesToDeviceAsync(peer, rows);
+    }
+
     private void ChooseDestination_Click(object sender, RoutedEventArgs e)
     {
         using var dialog = new Forms.FolderBrowserDialog
@@ -1689,6 +1904,11 @@ public partial class ShellWindow : Window
             System.Windows.MessageBox.Show(this, "Сначала выберите один или несколько файлов.", "NOVA", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
             return;
         }
+        await SendFilesToDeviceAsync(peer, rows);
+    }
+
+    private async Task SendFilesToDeviceAsync(DiscoveredDevice peer, TransferFileRow[] rows)
+    {
         foreach (var row in rows) row.Status = "В очереди";
         TransferStatusText.Text = $"Подготовка передачи на устройство «{peer.DisplayName}»…";
         try
@@ -1706,7 +1926,7 @@ public partial class ShellWindow : Window
                 else if (row.Status == "В очереди") row.Status = "Выбран";
             }
             TransferStatusText.Text = "Не удалось передать файл. Проверьте соединение и попробуйте снова.";
-            System.Windows.MessageBox.Show(this, "Передача не завершена. Проверьте, что устройство в сети и подтверждено на обоих компьютерах.", "NOVA", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            System.Windows.MessageBox.Show(this, "Передача не завершена. Проверьте, что устройство в сети и подтверждено на обоих устройствах.", "NOVA", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
     }
 
@@ -2087,11 +2307,8 @@ public partial class ShellWindow : Window
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (!_isDimensionsAnimating)
-        {
-            UpdateCapsuleGeometry(_capsuleMotion);
-            _browserWindowAdapter.ScheduleRefresh();
-        }
+        UpdateCapsuleGeometry(_capsuleMotion);
+        _browserWindowAdapter.ScheduleRefresh();
         if (_isGamingOverlay) return;
         if (!_isDimensionsAnimating && _dockEdge is not null && _state != PanelState.Fullscreen)
             PositionAtEdge(_dockEdge);
@@ -2105,7 +2322,7 @@ public partial class ShellWindow : Window
 
     private void Window_LocationChanged(object? sender, EventArgs e)
     {
-        if (_isDimensionsAnimating) return;
+        UpdateCapsuleGeometry(_capsuleMotion);
         _browserWindowAdapter.ScheduleRefresh();
         if (!_ready || _isGamingOverlay || _state == PanelState.Fullscreen) return;
         if ((_state is PanelState.Normal or PanelState.Expanded) && _dockEdge is null)
@@ -2267,6 +2484,10 @@ public partial class ShellWindow : Window
                 : _workspaceScreenDeviceName ?? _preferences.WorkspaceScreenDevice,
             BrowserAdaptationEnabled = _browserAdaptationEnabled
         };
+        if (!_applyingProfile)
+            _profileService.UpdateProfileSnapshot(
+                _profileService.ActiveProfile.Id,
+                CaptureProfileSnapshot());
         _preferences.Save();
     }
 

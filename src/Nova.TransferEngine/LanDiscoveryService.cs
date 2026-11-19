@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json;
 
@@ -13,8 +14,11 @@ public sealed class LanDiscoveryService : IAsyncDisposable
     private readonly Func<string, bool> _isTrusted;
     private readonly Dictionary<string, DiscoveredDevice> _devices = new(StringComparer.Ordinal);
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private CancellationTokenSource? _cancellation;
     private UdpClient? _udp;
+    private Task? _receiveLoop;
+    private Task? _announceLoop;
 
     public LanDiscoveryService(DeviceIdentity identity, int tcpPort, Func<string, bool> isTrusted)
     {
@@ -25,26 +29,70 @@ public sealed class LanDiscoveryService : IAsyncDisposable
 
     public void Start()
     {
-        if (_cancellation is not null) return;
-        _cancellation = new CancellationTokenSource();
+        _lifecycleGate.Wait();
+        try { StartCore(); }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _udp = new UdpClient(AddressFamily.InterNetwork);
-            _udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
-            _udp.JoinMulticastGroup(MulticastAddress);
-            _udp.MulticastLoopback = true;
-            _ = ReceiveLoopAsync(_cancellation.Token);
-            _ = AnnounceLoopAsync(_cancellation.Token);
+            await StopCoreAsync().ConfigureAwait(false);
+            lock (_gate) _devices.Clear();
+            StartCore();
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    private void StartCore()
+    {
+        if (_cancellation is not null) return;
+        var cancellation = new CancellationTokenSource();
+        UdpClient? udp = null;
+        try
+        {
+            udp = new UdpClient(AddressFamily.InterNetwork);
+            udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udp.EnableBroadcast = true;
+            udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+            udp.JoinMulticastGroup(MulticastAddress);
+            udp.MulticastLoopback = true;
+            _udp = udp;
+            _cancellation = cancellation;
+            _receiveLoop = ReceiveLoopAsync(udp, cancellation.Token);
+            _announceLoop = AnnounceLoopAsync(udp, cancellation.Token);
         }
         catch
         {
-            _cancellation.Dispose();
-            _cancellation = null;
-            _udp?.Dispose();
+            udp?.Dispose();
+            cancellation.Dispose();
             _udp = null;
+            _cancellation = null;
             throw;
         }
+    }
+
+    private async Task StopCoreAsync()
+    {
+        var cancellation = _cancellation;
+        if (cancellation is null) return;
+        _cancellation = null;
+        var udp = _udp;
+        _udp = null;
+        var receiveLoop = _receiveLoop;
+        var announceLoop = _announceLoop;
+        _receiveLoop = null;
+        _announceLoop = null;
+        cancellation.Cancel();
+        udp?.Dispose();
+        try
+        {
+            var loops = new[] { receiveLoop, announceLoop }.Where(task => task is not null).Cast<Task>().ToArray();
+            if (loops.Length > 0) await Task.WhenAll(loops).ConfigureAwait(false);
+        }
+        finally { cancellation.Dispose(); }
     }
 
     public IReadOnlyList<DiscoveredDevice> Snapshot()
@@ -57,7 +105,7 @@ public sealed class LanDiscoveryService : IAsyncDisposable
         }
     }
 
-    private async Task AnnounceLoopAsync(CancellationToken token)
+    private async Task AnnounceLoopAsync(UdpClient udp, CancellationToken token)
     {
         var announcement = new DeviceAnnouncement(1, _identity.Device.DeviceId, _identity.Device.DisplayName, _tcpPort, _identity.Fingerprint, DateTimeOffset.UtcNow);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(announcement);
@@ -65,22 +113,102 @@ public sealed class LanDiscoveryService : IAsyncDisposable
         {
             try
             {
-                await _udp!.SendAsync(bytes, new IPEndPoint(MulticastAddress, DiscoveryPort), token);
+                try
+                {
+                    await udp.SendAsync(bytes, new IPEndPoint(MulticastAddress, DiscoveryPort), token);
+                }
+                catch (SocketException ex)
+                {
+                    Console.Error.WriteLine($"[NOVA Transfer Engine] Multicast discovery announce failed: {ex.Message}");
+                }
+                foreach (var address in GetDirectedBroadcastAddresses())
+                {
+                    try
+                    {
+                        await udp.SendAsync(bytes, new IPEndPoint(address, DiscoveryPort), token);
+                    }
+                    catch (SocketException ex)
+                    {
+                        Console.Error.WriteLine($"[NOVA Transfer Engine] Broadcast discovery announce failed for {address}: {ex.Message}");
+                    }
+                }
                 await Task.Delay(TimeSpan.FromSeconds(2), token);
             }
             catch (OperationCanceledException) { break; }
             catch (ObjectDisposedException) { break; }
-            catch (SocketException) { await Task.Delay(TimeSpan.FromSeconds(2), token); }
+            catch (SocketException) { await WaitBeforeRetryAsync(token).ConfigureAwait(false); }
+            catch (NetworkInformationException ex)
+            {
+                Console.Error.WriteLine($"[NOVA Transfer Engine] Could not read network interfaces for discovery: {ex.Message}");
+                await WaitBeforeRetryAsync(token).ConfigureAwait(false);
+            }
         }
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken token)
+    private static async Task WaitBeforeRetryAsync(CancellationToken token)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    private static IReadOnlyCollection<IPAddress> GetDirectedBroadcastAddresses()
+    {
+        var addresses = new HashSet<IPAddress>();
+        foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (adapter.OperationalStatus != OperationalStatus.Up || adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                continue;
+
+            IPInterfaceProperties properties;
+            try { properties = adapter.GetIPProperties(); }
+            catch (NetworkInformationException) { continue; }
+
+            foreach (var unicast in properties.UnicastAddresses)
+            {
+                if (unicast.Address.AddressFamily != AddressFamily.InterNetwork)
+                    continue;
+                var broadcast = GetDirectedBroadcastAddress(unicast.Address, unicast.IPv4Mask);
+                if (broadcast is not null) addresses.Add(broadcast);
+            }
+        }
+        return addresses;
+    }
+
+    public static IPAddress? GetDirectedBroadcastAddress(IPAddress address, IPAddress subnetMask)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork ||
+            subnetMask.AddressFamily != AddressFamily.InterNetwork)
+            return null;
+
+        var addressBytes = address.GetAddressBytes();
+        var maskBytes = subnetMask.GetAddressBytes();
+        var prefixLength = 0;
+        var hostBitsStarted = false;
+        for (var index = 0; index < maskBytes.Length; index++)
+        {
+            for (var bit = 7; bit >= 0; bit--)
+            {
+                var isNetworkBit = (maskBytes[index] & (1 << bit)) != 0;
+                if (isNetworkBit && hostBitsStarted) return null;
+                if (isNetworkBit) prefixLength++;
+                else hostBitsStarted = true;
+            }
+        }
+        if (prefixLength is 0 or >= 31) return null;
+
+        var broadcastBytes = new byte[addressBytes.Length];
+        for (var index = 0; index < broadcastBytes.Length; index++)
+            broadcastBytes[index] = (byte)(addressBytes[index] | ~maskBytes[index]);
+        return new IPAddress(broadcastBytes);
+    }
+
+    private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
             try
             {
-                var datagram = await _udp!.ReceiveAsync(token);
+                var datagram = await udp.ReceiveAsync(token);
                 if (!TryParseAnnouncement(datagram.Buffer, datagram.RemoteEndPoint.Address, out var device) || device is null) continue;
                 if (device.DeviceId == _identity.Device.DeviceId || device.Fingerprint == _identity.Fingerprint || device.Address.IsIPv6LinkLocal) continue;
                 lock (_gate) _devices[device.DeviceId] = device;
@@ -118,16 +246,13 @@ public sealed class LanDiscoveryService : IAsyncDisposable
             _devices.Remove(id);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (_cancellation is not null)
+        await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            _cancellation.Cancel();
-            _udp?.Dispose();
-            _cancellation.Dispose();
-            _cancellation = null;
-            _udp = null;
+            await StopCoreAsync().ConfigureAwait(false);
         }
-        return ValueTask.CompletedTask;
+        finally { _lifecycleGate.Release(); }
     }
 }

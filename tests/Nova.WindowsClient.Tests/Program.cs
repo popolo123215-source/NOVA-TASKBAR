@@ -180,6 +180,9 @@ await RunAsync("OBS WebSocket reads state/scenes and sends recording/scene comma
 Run("browser adaptation finds a non-overlapping window position", TestBrowserWindowGeometry);
 Run("dock geometry respects edge orientation and snap threshold", TestPanelDockGeometry);
 Run("widget icon size stays within its DIP range and resizes navigation buttons", TestWidgetIconSize);
+Run("defect recovery controls use readable templates and centralized nav sizing", TestDefectRecoveryTemplates);
+Run("profile CRUD, persistence and built-in profiles", TestProfileCrudAndPersistence);
+Run("profile priority, cooldown and manual override", TestProfileRulesAndManualOverride);
 Run("screen text cleanup preserves paragraphs and merges wrapped lines", TestScreenTextCleanup);
 await RunAsync("screen translation rejects empty and oversized input before sending it", TestTranslationLimits);
 Run("default Windows output volume is readable", TestSystemMasterVolume);
@@ -1518,6 +1521,25 @@ async Task TestWindowsOcr()
     var text = await service.RecognizeImageAsync(imageStream.ToArray(), language.LanguageTag);
     Require(text.Contains("NOVA", StringComparison.OrdinalIgnoreCase),
         $"Windows OCR did not recognize the synthetic text image: {text}");
+
+    var russianLanguage = languages.FirstOrDefault(item =>
+        item.LanguageTag.StartsWith("ru", StringComparison.OrdinalIgnoreCase));
+    if (russianLanguage is not null)
+    {
+        using var russianBitmap = new Bitmap(1100, 180, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(russianBitmap))
+        {
+            graphics.Clear(Color.White);
+            using var russianFont = new Font("Segoe UI", 34, FontStyle.Bold);
+            graphics.DrawString("ПРИВЕТ NOVA 123", russianFont, Brushes.Black, new PointF(28, 52));
+        }
+        using var russianStream = new MemoryStream();
+        russianBitmap.Save(russianStream, ImageFormat.Png);
+        var russianText = await service.RecognizeImageAsync(russianStream.ToArray(), russianLanguage.LanguageTag);
+        Require(russianText.Contains("NOVA", StringComparison.OrdinalIgnoreCase) ||
+            russianText.Contains("ПРИВЕТ", StringComparison.OrdinalIgnoreCase),
+            $"Windows OCR did not recognize the synthetic Russian text image: {russianText}");
+    }
 }
 
 async Task TestLiveLoopback()
@@ -1531,6 +1553,167 @@ async Task TestLiveLoopback()
     Console.WriteLine(sample.Level > 0.01f
         ? $"      observed non-silent system audio (level {sample.Level:0.00})"
         : "      loopback capture was available; no significant audio level was sampled");
+}
+
+void TestProfileCrudAndPersistence()
+{
+    WithTempReminderStore(directory =>
+    {
+        var service = new ProfileService(new ProfileStore(directory));
+        service.Initialize();
+        Require(service.Profiles.Count == 5 &&
+            service.Profiles.Select(profile => profile.Name).Contains("Gaming", StringComparer.Ordinal),
+            "built-in NOVA profiles were not initialized");
+
+        var custom = service.CreateProfile("Work custom");
+        var duplicate = service.DuplicateProfile(custom.Id);
+        var renamed = service.RenameProfile(duplicate.Id, "Renamed profile");
+        Require(service.Profiles.Count == 7 &&
+            renamed.Name == "Renamed profile",
+            "custom profile create, duplicate or rename failed");
+
+        Require(service.DeleteProfile(renamed.Id),
+            "custom profile deletion failed");
+
+        var snapshot = ProfileSnapshot.Default with
+        {
+            SelectedWidget = "Music",
+            EnableAudioReactive = true,
+            NotificationsEnabled = false
+        };
+        service.UpdateProfileSnapshot("gaming", snapshot);
+        service.ActivateManual("gaming", pauseAutomation: true);
+
+        var restarted = new ProfileService(new ProfileStore(directory));
+        restarted.Initialize();
+        Require(restarted.ActiveProfile.Id == "gaming" &&
+            restarted.ActiveProfile.Snapshot.SelectedWidget == "Music" &&
+            !restarted.ActiveProfile.Snapshot.NotificationsEnabled &&
+            restarted.AutomationPaused,
+            "profile state and snapshot did not persist across restart");
+    });
+}
+
+void TestProfileRulesAndManualOverride()
+{
+    WithTempReminderStore(directory =>
+    {
+        var service = new ProfileService(new ProfileStore(directory));
+        service.Initialize();
+        var now = DateTimeOffset.UtcNow;
+        var high = new ProfileRule(
+            "gaming-rule",
+            ProfileRuleKind.Process,
+            "game.exe",
+            true,
+            200,
+            2,
+            30,
+            null,
+            null,
+            null);
+        var low = new ProfileRule(
+            "work-rule",
+            ProfileRuleKind.Process,
+            "devenv",
+            true,
+            100,
+            0,
+            30,
+            null,
+            null,
+            null);
+        service.AddRule("gaming", high);
+        service.AddRule("work", low);
+
+        var pendingResult = service.Evaluate(now.AddSeconds(3), ["game.exe"], false, null);
+        var activatedResult = service.Evaluate(now.AddSeconds(6), ["game.exe"], false, null);
+        Require(pendingResult == "default" &&
+            activatedResult == "gaming" &&
+            service.ActiveProfile.Id == "gaming",
+            "profile process rule did not activate after its configured delay");
+
+        var manual = service.ActivateManual("focus", pauseAutomation: true);
+        Require(manual.Id == "focus" &&
+            service.AutomationPaused &&
+            service.Evaluate(now.AddMinutes(1), ["game.exe"], false, null) == "focus",
+            "manual override did not prevent automatic profile switching");
+
+        service.ResumeAutomation();
+        service.Evaluate(now.AddSeconds(300), ["game.exe"], false, null);
+        Require(service.Evaluate(now.AddSeconds(303), ["game.exe"], false, null) == "gaming",
+            "automation did not resume after manual override");
+
+        service.ActivateManual("work", pauseAutomation: false);
+        service.Evaluate(
+            now.AddMinutes(10),
+            ["game.exe", "devenv"],
+            false,
+            null);
+        var priorityResult = service.Evaluate(
+            now.AddMinutes(10).AddSeconds(3),
+            ["game.exe", "devenv"],
+            false,
+            null);
+        Require(priorityResult == "gaming",
+            "higher-priority matching profile rule did not win");
+
+        Require(service.Evaluate(now.AddMinutes(11), [], false, null) == "default",
+            "missing processes did not fall back to the Default profile");
+    });
+}
+
+void TestDefectRecoveryTemplates()
+{
+    var directory = new DirectoryInfo(Directory.GetCurrentDirectory());
+    while (directory is not null &&
+           !File.Exists(Path.Combine(directory.FullName, "src", "Nova.WindowsClient", "ShellWindow.xaml")))
+        directory = directory.Parent;
+    Require(directory is not null, "the NOVA source root was not found for template validation");
+
+    var xaml = File.ReadAllText(Path.Combine(directory!.FullName, "src", "Nova.WindowsClient", "ShellWindow.xaml"));
+    var shell = File.ReadAllText(Path.Combine(directory.FullName, "src", "Nova.WindowsClient", "ShellWindow.xaml.cs"));
+    Require(xaml.Contains("<Style TargetType=\"ComboBox\">", StringComparison.Ordinal) &&
+        xaml.Contains("<Style TargetType=\"ComboBoxItem\">", StringComparison.Ordinal) &&
+        xaml.Contains("<Style TargetType=\"ListBoxItem\">", StringComparison.Ordinal) &&
+        xaml.Contains("<Style TargetType=\"PasswordBox\">", StringComparison.Ordinal),
+        "readable ComboBox, ListBox, or PasswordBox templates are missing");
+    var navigationStyleStart = xaml.IndexOf("<Style x:Key=\"AdaptiveWidgetNavigationButton\"", StringComparison.Ordinal);
+    var navigationStyleEnd = navigationStyleStart >= 0
+        ? xaml.IndexOf("</Style>", navigationStyleStart, StringComparison.Ordinal)
+        : -1;
+    var navigationStyle = navigationStyleStart >= 0 && navigationStyleEnd >= 0
+        ? xaml[navigationStyleStart..(navigationStyleEnd + "</Style>".Length)]
+        : string.Empty;
+    Require(navigationStyle.Length > 0 &&
+        !navigationStyle.Contains("<Setter Property=\"Width\"", StringComparison.Ordinal),
+        "widget navigation still has a competing local Width source");
+    Require(shell.Contains("CompleteDimensionsChange(animationVersion, targetWidth, targetHeight, targetLeft, targetTop)",
+            StringComparison.Ordinal) &&
+        shell.Contains("BeginAnimation(WidthProperty, null)", StringComparison.Ordinal),
+        "dimension transitions do not animate from current values to a synchronized target");
+    var island = File.ReadAllText(Path.Combine(directory.FullName, "src", "Nova.WindowsClient", "ShellWindow.Island.cs"));
+    Require(xaml.Contains("x:Name=\"CompactLyricPrevious\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricCurrent\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricNext\"", StringComparison.Ordinal),
+        "the compact music capsule does not contain three lyric lines");
+    Require(xaml.Contains("x:Name=\"CompactLyricPreviousViewport\" Grid.Row=\"0\" HorizontalScrollBarVisibility=\"Hidden\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricCurrentViewport\" Grid.Row=\"1\" HorizontalScrollBarVisibility=\"Hidden\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricNextViewport\" Grid.Row=\"2\" HorizontalScrollBarVisibility=\"Hidden\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricPrevious\" Foreground=\"#88FFFFFF\" FontSize=\"8\" TextWrapping=\"NoWrap\" TextAlignment=\"Center\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricCurrent\" Foreground=\"{StaticResource Ink}\" FontSize=\"10\" FontWeight=\"SemiBold\" TextWrapping=\"NoWrap\" TextAlignment=\"Center\"", StringComparison.Ordinal) &&
+        xaml.Contains("x:Name=\"CompactLyricNext\" Foreground=\"#88FFFFFF\" FontSize=\"8\" TextWrapping=\"NoWrap\" TextAlignment=\"Center\"", StringComparison.Ordinal) &&
+        xaml.Contains("HorizontalContentAlignment=\"Center\"", StringComparison.Ordinal) &&
+        island.Contains("ScrollToHorizontalOffset", StringComparison.Ordinal) &&
+        island.Contains("state.ScrollableWidth / scrollSpeed", StringComparison.Ordinal),
+        "the compact lyric lines are not centered within their music capsule");
+    Require(island.Contains("UpdateCompactLyrics(media?.CurrentPosition ?? TimeSpan.Zero)", StringComparison.Ordinal) &&
+        island.Contains("if (_lyricsLines.Count == 0)", StringComparison.Ordinal) &&
+        !island.Contains("UpdateCompactLyrics(TimeSpan.From", StringComparison.Ordinal),
+        "compact lyrics are not driven exclusively by loaded real lines and media playback position");
+    Require(!island.Contains("CompactMediaState.Text", StringComparison.Ordinal) &&
+        !xaml.Contains("x:Name=\"CompactMediaState\"", StringComparison.Ordinal),
+        "the compact music capsule still shows a playback-state label");
 }
 
 void TestThroughput()

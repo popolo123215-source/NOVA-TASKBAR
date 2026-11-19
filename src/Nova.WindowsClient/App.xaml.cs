@@ -33,6 +33,7 @@ public partial class App : Application
     private ProductivityService? _productivityService;
     private WindowsToastNotificationService? _toastNotificationService;
     private string? _toastRegistrationError;
+    private ProfileService? _profileService;
     private const string ActivationPipeName = "NOVA.TaskBar.Activation.6";
     private CancellationTokenSource? _activationListenerCancellation;
     private Task? _activationListenerTask;
@@ -72,6 +73,8 @@ public partial class App : Application
         _notificationCenter.Initialize();
         _productivityService = new ProductivityService(new ProductivityStore(stateDirectory));
         _productivityService.Initialize();
+        _profileService = new ProfileService(new ProfileStore(stateDirectory));
+        _profileService.Initialize();
         if (_notificationCenter.IsAvailable)
         {
             try
@@ -98,7 +101,7 @@ public partial class App : Application
             }
         };
         _toastNotificationService = new WindowsToastNotificationService();
-        _window = new ShellWindow(_transferService, reminderScheduler, _notificationCenter, _productivityService);
+        _window = new ShellWindow(_transferService, reminderScheduler, _notificationCenter, _productivityService, _profileService);
         InitializeTray();
         StartActivationListener();
         ToastNotificationManagerCompat.OnActivated += _ => Dispatcher.BeginInvoke(new Action(ShowPanel));
@@ -110,6 +113,12 @@ public partial class App : Application
         _trainReminderTimer.Tick += (_, _) =>
         {
             var center = _notificationCenter!;
+            var profileNotificationsEnabled = _profileService?.ActiveProfile.Snapshot.NotificationsEnabled ?? true;
+            var suppressProfileToasts = _profileService?.ActiveProfile.Snapshot.SuppressNotificationToasts ?? false;
+            if (!profileNotificationsEnabled || suppressProfileToasts)
+            {
+                return;
+            }
             var previousTrainError = reminderScheduler.LastError;
             reminderScheduler.ProcessDue(DateTimeOffset.UtcNow, _toastNotificationService!);
             if (reminderScheduler.LastError is { Length: > 0 } trainError &&

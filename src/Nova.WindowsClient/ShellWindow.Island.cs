@@ -15,6 +15,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Nova.WindowsClient.Services;
 using Forms = System.Windows.Forms;
@@ -35,7 +36,8 @@ public partial class ShellWindow
     private readonly ObservableCollection<TimedLyricLine> _lyricsLines = [];
     private readonly DispatcherTimer _clockTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _mediaRefreshTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(4) };
-    private readonly DispatcherTimer _audioReactiveTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly DispatcherTimer _audioReactiveTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
+    private readonly DispatcherTimer _compactLyricMarqueeTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
     private readonly DispatcherTimer _timerPulse = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _systemStatsTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer _weatherRefreshTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMinutes(15) };
@@ -46,6 +48,8 @@ public partial class ShellWindow
     private CancellationTokenSource? _weatherSearchCancellation;
     private CancellationTokenSource? _lyricsCancellation;
     private readonly ObservableCollection<WeatherLocation> _weatherLocations = [];
+    private readonly Dictionary<ScrollViewer, CompactLyricMarqueeState> _compactLyricMarquees = [];
+    private readonly HashSet<ScrollViewer> _pendingCompactLyricMarquees = [];
     private WeatherSnapshot? _lastWeather;
     private WeatherLocation? _selectedWeatherLocation;
     private bool _mediaUiUpdating;
@@ -63,6 +67,7 @@ public partial class ShellWindow
     private bool _isGamingOverlay;
     private bool _overlayEditMode;
     private bool _inciUriAvailable;
+    private string? _inciExecutablePath;
     private float _smoothedAudioLevel;
     private float _smoothedAudioBass;
     private float _smoothedAudioTreble;
@@ -93,6 +98,7 @@ public partial class ShellWindow
         _clockTimer.Tick += (_, _) => UpdateClock();
         _mediaRefreshTimer.Tick += async (_, _) => await _mediaService.RefreshSessionAsync();
         _audioReactiveTimer.Tick += (_, _) => UpdateAudioReactiveUi();
+        _compactLyricMarqueeTimer.Tick += (_, _) => UpdateCompactLyricMarquees();
         _timerPulse.Tick += (_, _) =>
         {
             RefreshProductivityTimers();
@@ -127,6 +133,7 @@ public partial class ShellWindow
         _timerPulse.Start();
         _systemStatsTimer.Start();
         _weatherRefreshTimer.Start();
+        _profileTimer.Start();
         UpdateCapsuleGeometry(0);
         UpdateAudioReactiveUi();
         _ = InitializeMediaAsync();
@@ -148,10 +155,12 @@ public partial class ShellWindow
         _clockTimer.Stop();
         _mediaRefreshTimer.Stop();
         _audioReactiveTimer.Stop();
+        _compactLyricMarqueeTimer.Stop();
         _timerPulse.Stop();
         _systemStatsTimer.Stop();
         _weatherRefreshTimer.Stop();
         _masterVolumeRefreshTimer.Stop();
+        _profileTimer.Stop();
         _masterVolumeWriteTimer.Stop();
         _hoverCollapseTimer.Stop();
         _weatherCancellation?.Cancel();
@@ -162,6 +171,8 @@ public partial class ShellWindow
         _weatherSearchCancellation = null;
         _lyricsCancellation?.Cancel();
         _lyricsCancellation = null;
+        _compactLyricMarquees.Clear();
+        _pendingCompactLyricMarquees.Clear();
         _mediaService.Dispose();
         _audioMeterService.Dispose();
         _systemStatsService.Dispose();
@@ -194,13 +205,6 @@ public partial class ShellWindow
         CompactMediaArtist.Visibility = hasTrack && string.IsNullOrWhiteSpace(media?.Artist)
             ? Visibility.Collapsed
             : Visibility.Visible;
-        CompactMediaState.Text = media is null ? "Нет медиасессии" : media.IsPlaying ? "Играет" : "Пауза";
-        CompactMediaState.Foreground = media?.IsPlaying == true
-            ? new SolidColorBrush(WpfColor.FromRgb(0xFF, 0xC2, 0x7A))
-            : new SolidColorBrush(WpfColor.FromRgb(0x9A, 0xA1, 0xAE));
-        CompactMediaState.ToolTip = media is null
-            ? "Активная медиасессия Windows не найдена."
-            : media.IsPlaying ? "Трек воспроизводится." : "Воспроизведение приостановлено.";
         CompactArtworkImage.Source = media?.Artwork;
         MediaArtworkImage.Source = media?.Artwork;
         MediaArtworkPlaceholder.Visibility = media?.Artwork is null ? Visibility.Visible : Visibility.Collapsed;
@@ -233,6 +237,7 @@ public partial class ShellWindow
             return;
 
         _lyricsTrackKey = trackKey;
+        _compactLyricIndex = -1;
         _lyricsCancellation?.Cancel();
         _lyricsCancellation = null;
         _lyricsLines.Clear();
@@ -582,7 +587,7 @@ public partial class ShellWindow
 
     private void UpdateCapsuleGeometry(float motion)
     {
-        if (!IsLoaded || _isDimensionsAnimating || _isGamingOverlay || _state == PanelState.Fullscreen)
+        if (!IsLoaded || _isGamingOverlay || _state == PanelState.Fullscreen)
             return;
 
         var width = PanelSurface.ActualWidth;
@@ -769,12 +774,9 @@ public partial class ShellWindow
         CompactArtworkFrame.Visibility = _showCapsuleArtwork && CompactArtworkImage.Source is not null
             ? Visibility.Visible
             : Visibility.Collapsed;
-        CompactMediaState.Visibility = _showCapsulePlaybackStatus ? Visibility.Visible : Visibility.Collapsed;
-
         var media = _mediaService.Current;
         var mediaVisible = _showCapsuleMedia ||
-            (_showCapsuleArtwork && media?.Artwork is not null) ||
-            (_showCapsulePlaybackStatus && media is not null);
+            (_showCapsuleArtwork && media?.Artwork is not null);
         CompactMediaButton.Visibility = mediaVisible ? Visibility.Visible : Visibility.Collapsed;
 
         FrameworkElement[] order = _capsuleContentOrder switch
@@ -845,7 +847,182 @@ public partial class ShellWindow
         }
         _mediaUiUpdating = false;
         if (_lyricsLines.Count > 0)
+        {
             SelectCurrentLyricLine();
+            UpdateCompactLyrics(media?.CurrentPosition ?? TimeSpan.Zero);
+        }
+        else
+        {
+            CompactLyricsBlock.Visibility = Visibility.Collapsed;
+            SetCompactLyricLines("", "", "");
+            CompactMediaTitle.Visibility = Visibility.Visible;
+            CompactMediaArtist.Visibility = Visibility.Visible;
+        }
+    }
+
+    private int _compactLyricIndex = -1;
+
+    private void UpdateCompactLyrics(TimeSpan position)
+    {
+        if (_lyricsLines.Count == 0)
+        {
+            CompactLyricsBlock.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        CompactMediaTitle.Visibility = Visibility.Collapsed;
+        CompactMediaArtist.Visibility = Visibility.Collapsed;
+
+        var currentIndex = -1;
+        for (var index = 0; index < _lyricsLines.Count; index++)
+        {
+            if (_lyricsLines[index].Position > position)
+                break;
+            currentIndex = index;
+        }
+
+        string previous;
+        string current;
+        string next;
+        if (currentIndex < 0)
+        {
+            previous = "";
+            current = _lyricsLines[0].Text;
+            next = _lyricsLines.Count > 1 ? _lyricsLines[1].Text : "";
+        }
+        else
+        {
+            previous = currentIndex > 0 ? _lyricsLines[currentIndex - 1].Text : "";
+            current = _lyricsLines[currentIndex].Text;
+            next = currentIndex + 1 < _lyricsLines.Count ? _lyricsLines[currentIndex + 1].Text : "";
+        }
+
+        SetCompactLyricLines(previous, current, next);
+        CompactLyricsBlock.Visibility = Visibility.Visible;
+        if (_compactLyricIndex == currentIndex)
+            return;
+
+        _compactLyricIndex = currentIndex;
+        AnimateCompactLyricLine(CompactLyricCurrent);
+    }
+
+    private void SetCompactLyricLines(string previous, string current, string next)
+    {
+        SetCompactLyricLine(CompactLyricPreviousViewport, CompactLyricPrevious, previous);
+        SetCompactLyricLine(CompactLyricCurrentViewport, CompactLyricCurrent, current);
+        SetCompactLyricLine(CompactLyricNextViewport, CompactLyricNext, next);
+
+        if (_pendingCompactLyricMarquees.Count > 0)
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshPendingCompactLyricMarquees), DispatcherPriority.Loaded);
+        }
+    }
+
+    private void SetCompactLyricLine(ScrollViewer viewport, TextBlock line, string text)
+    {
+        if (string.Equals(line.Text, text, StringComparison.Ordinal))
+            return;
+
+        line.Text = text;
+        viewport.ScrollToHorizontalOffset(0);
+        _compactLyricMarquees.Remove(viewport);
+        _pendingCompactLyricMarquees.Add(viewport);
+    }
+
+    private void RefreshPendingCompactLyricMarquees()
+    {
+        foreach (var viewport in _pendingCompactLyricMarquees.ToArray())
+        {
+            _pendingCompactLyricMarquees.Remove(viewport);
+            viewport.UpdateLayout();
+            if (viewport.ScrollableWidth > 1)
+                _compactLyricMarquees[viewport] = new CompactLyricMarqueeState(DateTimeOffset.UtcNow, viewport.ScrollableWidth);
+        }
+
+        if (_compactLyricMarquees.Count > 0)
+            _compactLyricMarqueeTimer.Start();
+        else
+            _compactLyricMarqueeTimer.Stop();
+    }
+
+    private void UpdateCompactLyricMarquees()
+    {
+        const double scrollSpeed = 28;
+        const double pauseSeconds = 0.8;
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var (viewport, state) in _compactLyricMarquees.ToArray())
+        {
+            if (!viewport.IsVisible)
+            {
+                state.StartedAt = now;
+                viewport.ScrollToHorizontalOffset(0);
+                continue;
+            }
+
+            var scrollableWidth = viewport.ScrollableWidth;
+            if (Math.Abs(scrollableWidth - state.ScrollableWidth) > 1)
+            {
+                state.ScrollableWidth = scrollableWidth;
+                state.StartedAt = now;
+            }
+
+            var travelSeconds = state.ScrollableWidth / scrollSpeed;
+            var elapsedSeconds = (now - state.StartedAt).TotalSeconds - pauseSeconds;
+            if (elapsedSeconds < 0)
+            {
+                viewport.ScrollToHorizontalOffset(0);
+            }
+            else if (elapsedSeconds < travelSeconds)
+            {
+                viewport.ScrollToHorizontalOffset(elapsedSeconds * scrollSpeed);
+            }
+            else if (elapsedSeconds < travelSeconds + pauseSeconds)
+            {
+                viewport.ScrollToHorizontalOffset(state.ScrollableWidth);
+            }
+            else
+            {
+                state.StartedAt = now;
+                viewport.ScrollToHorizontalOffset(0);
+            }
+        }
+    }
+
+    private sealed class CompactLyricMarqueeState(DateTimeOffset startedAt, double scrollableWidth)
+    {
+        public DateTimeOffset StartedAt { get; set; } = startedAt;
+        public double ScrollableWidth { get; set; } = scrollableWidth;
+    }
+
+    private static void AnimateCompactLyricLine(TextBlock line)
+    {
+        var transform = line.RenderTransform as TranslateTransform;
+        if (transform is null)
+        {
+            transform = new TranslateTransform();
+            line.RenderTransform = transform;
+        }
+
+        line.BeginAnimation(UIElement.OpacityProperty, null);
+        transform.BeginAnimation(TranslateTransform.YProperty, null);
+
+        var storyboard = new Storyboard();
+        var fade = new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(180))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        var move = new DoubleAnimation(5, 0, TimeSpan.FromMilliseconds(220))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(fade, line);
+        Storyboard.SetTargetProperty(fade, new PropertyPath(UIElement.OpacityProperty));
+        Storyboard.SetTarget(move, transform);
+        Storyboard.SetTargetProperty(move, new PropertyPath(TranslateTransform.YProperty));
+        storyboard.Children.Add(fade);
+        storyboard.Children.Add(move);
+        storyboard.Begin();
     }
 
     private static string FormatMediaTime(TimeSpan value) =>
@@ -1104,14 +1281,20 @@ public partial class ShellWindow
             var command = commandKey?.GetValue(null) as string;
             var executable = ExtractExecutablePath(command);
             _inciUriAvailable = !string.IsNullOrWhiteSpace(executable) && File.Exists(executable);
+            _inciExecutablePath = _inciUriAvailable ? executable : null;
             IncyConnectButton.IsEnabled = _inciUriAvailable;
             IncyDisconnectButton.IsEnabled = _inciUriAvailable;
             IncyStatusButton.IsEnabled = _inciUriAvailable;
 
             if (_inciUriAvailable)
             {
-                VpnStatusText.Text = "Статус подключения не подтверждён";
-                VpnDetailText.Text = "Обработчик INCY найден. NOVA может передать команды connect и disconnect, но не получает ответ о результате, список серверов или выбранный сервер. Кнопка «Открыть INCY» запускает интерфейс клиента.";
+                var processName = Path.GetFileNameWithoutExtension(_inciExecutablePath);
+                var processRunning = !string.IsNullOrWhiteSpace(processName) &&
+                    Process.GetProcessesByName(processName).Length > 0;
+                VpnStatusText.Text = processRunning
+                    ? "INCY запущен · статус не подтверждён"
+                    : "INCY установлен · статус не подтверждён";
+                VpnDetailText.Text = "Обработчик INCY найден. NOVA передаёт URI-команды и видит только факт запуска процесса: выбранный сервер, реальное подключение и доступность сети INCY не доступны через выявленный API. Список серверов не подставляется.";
             }
             else
             {
